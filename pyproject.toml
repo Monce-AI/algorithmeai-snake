@@ -8,10 +8,10 @@ version = "4.2.0"
 description = "Snake - SAT-ensembled bucketed multiclass classifier"
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "MIT" }
+license = { text = "Proprietary" }
 authors = [
-    { name = "Algorithme.ai" },
-    { name = "Charles Dana" }
+    { name = "Charles Dana" },
+    { name = "Monce SAS" }
 ]
 dependencies = []
 
@@ -19,9 +19,9 @@ dependencies = []
 snake = "algorithmeai.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/AlgorithmeAi/Snake"
-Repository = "https://github.com/AlgorithmeAi/Snake"
-Documentation = "https://github.com/AlgorithmeAi/Snake#readme"
+Homepage = "https://github.com/Monce-AI/algorithmeai-snake"
+Repository = "https://github.com/Monce-AI/algorithmeai-snake"
+Documentation = "https://github.com/Monce-AI/algorithmeai-snake#readme"
 
 [tool.hatch.build.targets.wheel]
 packages = ["algorithmeai"]

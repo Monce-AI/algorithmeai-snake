@@ -3,437 +3,312 @@
 [![GitHub last commit](https://img.shields.io/github/last-commit/Monce-AI/algorithmeai-snake?logo=github)](https://github.com/Monce-AI/algorithmeai-snake/commits/main)
 [![GitHub repo size](https://img.shields.io/github/repo-size/Monce-AI/algorithmeai-snake)](https://github.com/Monce-AI/algorithmeai-snake)
 
-[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-Proprietary-red.svg?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAxTDMgNXY2YzcgNCA4LjUgOC40IDkgMTIuOEM5LjUgMjAuNCA4IDE2IDggMTFWNmw0LTIuNUwxNiA2djVjMCA1LTEuNSA5LjQtNCAxa)](LICENSE)
 [![Version](https://img.shields.io/badge/v4.2.0-SAT_Bucketed-blueviolet.svg?logo=semanticrelease)](https://github.com/Monce-AI/algorithmeai-snake)
 [![Build](https://img.shields.io/badge/Build-Passing-brightgreen.svg?logo=githubactions&logoColor=white)](#)
 
 [![Production](https://img.shields.io/badge/Production-Live_on_AWS-FF9900.svg?logo=amazonaws&logoColor=white)](https://snake.aws.monce.ai)
 [![API](https://img.shields.io/badge/API-snake.aws.monce.ai-009688.svg?logo=fastapi&logoColor=white)](https://snake.aws.monce.ai/health)
-[![Accuracy](https://img.shields.io/badge/Train_Accuracy-99.33%25-brightgreen.svg?logo=target)](#)
+[![Accuracy](https://img.shields.io/badge/Train_Accuracy-100%25-brightgreen.svg?logo=target)](#benchmarks)
 [![Throughput](https://img.shields.io/badge/Throughput-201_qps-blue.svg?logo=speedtest)](#)
 
-[![Algorithm](https://img.shields.io/badge/Algorithm-SAT--based_Lookalikes-7B2D8B.svg?logo=probot&logoColor=white)](#)
-[![XAI](https://img.shields.io/badge/XAI-Fully_Explainable-FF6F00.svg?logo=opensourceinitiative&logoColor=white)](#)
-[![Complexity](https://img.shields.io/badge/Complexity-O(n·log(n)·m·b²)-lightgrey.svg?logo=wolframmathematica)](#)
-[![Architecture](https://img.shields.io/badge/Cascade-Snake_→_Fuzzy_→_LLM-E91E63.svg?logo=stackblitz&logoColor=white)](#)
+[![Algorithm](https://img.shields.io/badge/Algorithm-SAT--based_Lookalikes-7B2D8B.svg?logo=probot&logoColor=white)](#what-is-snake)
+[![XAI](https://img.shields.io/badge/XAI-Fully_Explainable-FF6F00.svg?logo=opensourceinitiative&logoColor=white)](#prediction-api)
+[![Complexity](https://img.shields.io/badge/Complexity-O(n·log(n)·m·b²)-lightgrey.svg?logo=wolframmathematica)](#architecture)
+[![Architecture](https://img.shields.io/badge/Cascade-Snake_→_Fuzzy_→_LLM-E91E63.svg?logo=stackblitz&logoColor=white)](#architecture)
 
 **Author:** Charles Dana · [Monce SAS](https://monce.ai)
 
-# Algorithme AI - Snake 🐍
-**Author:** Charles Dana  
-**Date:** December 2025  
-**Complexity:** O(n·log(n)·m·bucket²)
+# Snake
 
-A Python library for CSV data analysis and classification using a SAT logic-based approach with explanatory clauses.
+SAT-based explainable multiclass classifier. Zero dependencies. Pure Python.
 
-Snake is an **XAI (Explainable AI)** polynomial-time multiclass oracle. It provides high-accuracy classification while maintaining a full "Audit Trail" for every prediction, allowing you to understand *why* the model reached a specific conclusion through "lookalike" analysis and logical AND statements.
+## What Is Snake
 
----
+Snake is a **SAT-based lookalike voting classifier**. For each prediction, it finds training samples that "look alike" via Boolean clause matching, then votes by their labels. The result: a fully explainable classifier where every prediction comes with a human-readable audit trail.
 
-### 🚀 Performance
-The Snake algorithm achieves a high accuracy score of **0.81100** on the **Titanic Kaggle Dataset** challenge.
+```
+Input X  →  Match SAT clauses  →  Find lookalikes  →  Vote  →  Prediction + Audit
+```
 
-### 🔍 Explainability (XAI)
-Unlike "black-box" models, Snake provides a full audit of its reasoning. It identifies "lookalikes" from the training set and displays the exact logical conditions that link them to the new data point.
+> **Predicted outcome:** `setosa` (93.3%)
+> Because: `"petal_length" <= 2.45` AND `"petal_width" <= 0.8`
+> Matched 15 lookalikes, all class `setosa`.
 
-**Example Audit Output:**
-> **Predicted outcome:** Class [0] (98.88% probability)  
-> **Reasoning:** Datapoint is a lookalike to Passenger #5 (Allen, Mr. William Henry) because:
-> * The text field `Sex` does not contain [female]
-> * The numeric field `Age` is between [34.0] and [37.0]
-> * The numeric field `Pclass` is greater than [2.5]
+## Install
 
----
-
-### 🛠 Installation
-To install the package in editable mode for local development:
 ```bash
+pip install git+https://github.com/Monce-AI/algorithmeai-snake.git
+```
+
+Dev install:
+```bash
+git clone https://github.com/Monce-AI/algorithmeai-snake.git
+cd algorithmeai-snake
 pip install -e .
 ```
 
-## 📋 Table of Contents
+Python 3.9+. Zero dependencies — uses only the standard library.
 
-- [Installation](#installation)
-- [Overview](#overview)
-- [Quick Start](#quick-start)
-- [Function Documentation](#function-documentation)
-- [Supported Problem Types](#supported-problem-types)
-- [Examples](#examples)
-
-## 🚀 Installation
+## Quick Start
 
 ```python
 from algorithmeai import Snake
-```
 
-No external dependencies required - uses only Python standard library.
-
-## 📖 Overview
-
-**Snake** is a multiclass CSV data handler that builds explanatory models based on logical clauses. The system identifies "lookalikes" (similar data points) and generates interpretable rules for classification.
-
-### Key Features
-
-- **Explainable Classification**: Generates understandable logical rules
-- **Multi-type Support**: Handles binary, integer, float, and text data
-- **Complete Audit**: Provides detailed explanations for each prediction
-- **Validation**: Pruning process to optimize the model
-
-## ⚡ Quick Start
-
-```python
-# Create a Snake model
-model = Snake(
-    csv_path="data.csv",
-    n_layers=100,
-    vocal=True,
-    target_index=0,
-    excluded_features_index=[1, 2]
-)
-
-# Make a prediction
-datapoint = {"feature1": 5.2, "feature2": "text", ...}
-prediction = model.get_prediction(datapoint)
-
-# Get a complete explanation
-audit = model.get_audit(datapoint)
-
-# Save the model
-model.to_json("my_model.json")
-
-# Load an existing model
-model = Snake("my_model.json")
-```
-
-## 📚 Function Documentation
-
-### Initialization
-
-#### `Snake(csv_path, n_layers=100, vocal=True, target_index=0, excluded_features_index=[])`
-
-Creates a Snake instance from a CSV or JSON file.
-
-**Parameters:**
-- `csv_path` (str): Path to CSV or JSON file
-- `n_layers` (int): Number of logical layers to build (default: 100)
-- `vocal` (bool): Enable verbose logging (default: True)
-- `target_index` (int): Index of the target column (default: 0)
-- `excluded_features_index` (list): Indices of columns to exclude from training
-
-**Example:**
-```python
-model = Snake("dataset.csv", n_layers=50, target_index=0)
-```
-
----
-
-### Prediction Functions
-
-#### `get_prediction(X)`
-
-Predicts the most probable class for a data point.
-
-**Parameters:**
-- `X` (dict): Dictionary with feature values
-
-**Returns:** Predicted target value
-
-**Example:**
-```python
-prediction = model.get_prediction({"age": 25, "name": "Alice"})
-```
-
----
-
-#### `get_probability(X)`
-
-Computes the probability vector for all classes.
-
-**Parameters:**
-- `X` (dict): Dictionary with feature values
-
-**Returns:** Dictionary {class: probability}
-
-**Example:**
-```python
-probas = model.get_probability({"age": 25, "name": "Alice"})
-# Result: {0: 0.75, 1: 0.25}
-```
-
----
-
-#### `get_lookalikes(X)`
-
-Identifies similar data points in the training set.
-
-**Parameters:**
-- `X` (dict): Dictionary with feature values
-
-**Returns:** List of triplets [index, class, conditions]
-
-**Example:**
-```python
-lookalikes = model.get_lookalikes({"age": 25, "name": "Alice"})
-# Result: [[42, 1, [0, 5, 12]], [87, 1, [3, 7]]]
-```
-
----
-
-### Audit and Explanation Functions
-
-#### `get_audit(X)`
-
-Generates a complete audit report for a prediction.
-
-**Parameters:**
-- `X` (dict): Dictionary with feature values
-
-**Returns:** String with detailed audit
-
-**Example:**
-```python
-audit = model.get_audit({"age": 25, "name": "Alice"})
-print(audit)
-```
-
----
-
-#### `get_plain_text_assertion(condition, l)`
-
-Converts a logical condition into readable text.
-
-**Parameters:**
-- `condition` (list): List of clause indices
-- `l` (int): Index of the lookalike data point
-
-**Returns:** Textual description of the condition
-
----
-
-#### `get_augmented(X)`
-
-Enriches a data point with all available information.
-
-**Parameters:**
-- `X` (dict): Dictionary with feature values
-
-**Returns:** Enriched dictionary with lookalikes, probabilities, prediction, and audit
-
-**Example:**
-```python
-augmented = model.get_augmented({"age": 25, "name": "Alice"})
-# Contains: X + Lookalikes, Probability, Prediction, Audit
-```
-
----
-
-### Internal Logical Functions
-
-#### `apply_literal(X, literal)`
-
-Tests if a data point satisfies a logical literal.
-
-**Parameters:**
-- `X` (dict): Data point
-- `literal` (list): [index, value, negation, data_type]
-
-**Returns:** True if the literal is satisfied, False otherwise
-
----
-
-#### `apply_clause(X, clause)`
-
-Tests if a data point satisfies a clause (OR of literals).
-
-**Parameters:**
-- `X` (dict): Data point
-- `clause` (list): List of literals
-
-**Returns:** True if at least one literal is satisfied
-
----
-
-### Model Management
-
-#### `to_json(fout="snakeclassifier.json")`
-
-Saves the model to JSON format.
-
-**Parameters:**
-- `fout` (str): Output file path
-
-**Example:**
-```python
-model.to_json("my_model_v1.json")
-```
-
----
-
-#### `from_json(filepath="snakeclassifier.json")`
-
-Loads a model from a JSON file.
-
-**Parameters:**
-- `filepath` (str): Path to the file to load
-
----
-
-#### `make_validation(Xs, pruning_coef=0.5)`
-
-Validates and prunes the model on a validation set.
-
-**Parameters:**
-- `Xs` (list): List of validation data points
-- `pruning_coef` (float): Pruning coefficient (0.5 = reduce by half)
-
-**Example:**
-```python
-validation_set = [{"age": 30, "name": "Bob", "target": 1}, ...]
-model.make_validation(validation_set, pruning_coef=0.6)
-```
-
----
-
-### Utilities
-
-#### `read_csv(fname)`
-
-Parses a CSV file with quote handling.
-
-**Parameters:**
-- `fname` (str): CSV file path
-
-**Returns:** Tuple (header, data)
-
----
-
-#### `make_population(fname, drop=False)`
-
-Creates the data population from a CSV.
-
-**Parameters:**
-- `fname` (str): CSV file path
-- `drop` (bool): If True, removes duplicates
-
-**Returns:** List of dictionaries
-
----
-
-## 🎯 Supported Problem Types
-
-Snake automatically detects the problem type:
-
-### 1. **Binary (0/1 or True/False)**
-```python
-# Examples: fraud/not fraud, sick/healthy
-```
-
-### 2. **Multiclass Integers**
-```python
-# Examples: categories 0, 1, 2, 3
-```
-
-### 3. **Regression (Floating Point Numbers)**
-```python
-# Examples: prices, temperatures, scores
-```
-
-### 4. **Text Classification**
-```python
-# Examples: named categories, text labels
-```
-
-## 💡 Complete Examples
-
-### Example 1: Simple Classification
-
-```python
-# Create and train the model
-model = Snake("iris.csv", n_layers=50, target_index=4)
-
-# Predict
-new_flower = {
-    "sepal_length": 5.1,
-    "sepal_width": 3.5,
-    "petal_length": 1.4,
-    "petal_width": 0.2
-}
-
-prediction = model.get_prediction(new_flower)
-probabilities = model.get_probability(new_flower)
-
-print(f"Prediction: {prediction}")
-print(f"Probabilities: {probabilities}")
-```
-
-### Example 2: Detailed Audit
-
-```python
-# Get a complete explanation
-audit_report = model.get_audit(new_flower)
-print(audit_report)
-
-# Output:
-# ### BEGIN AUDIT ###
-# ### Datapoint {...}
-# ## Number of lookalikes 15
-# ## Predicted outcome (max proba) [setosa]
-# 
-# # Probability of being equal to class setosa : 93.3%
-# # Probability of being equal to class versicolor : 6.7%
-# ...
-```
-
-### Example 3: Validation and Optimization
-
-```python
-# Load a validation set
-validation_data = [
-    {"feature1": 1.2, "feature2": "A", "target": 0},
-    {"feature1": 3.4, "feature2": "B", "target": 1},
-    # ...
+# Train from a list of dicts (production pattern)
+data = [
+    {"species": "setosa",     "petal_length": 1.4, "petal_width": 0.2},
+    {"species": "setosa",     "petal_length": 1.3, "petal_width": 0.3},
+    {"species": "versicolor", "petal_length": 4.5, "petal_width": 1.5},
+    {"species": "versicolor", "petal_length": 4.1, "petal_width": 1.3},
+    {"species": "virginica",  "petal_length": 5.2, "petal_width": 2.0},
+    {"species": "virginica",  "petal_length": 5.0, "petal_width": 1.9},
+    # ... more rows
 ]
 
-# Prune the model
-model.make_validation(validation_data, pruning_coef=0.7)
+model = Snake(data, n_layers=5, bucket=250)
 
-# Save the optimized model
-model.to_json("model_optimized.json")
+# Predict
+X = {"petal_length": 4.3, "petal_width": 1.4}
+print(model.get_prediction(X))    # "versicolor"
+print(model.get_probability(X))   # {"setosa": 0.0, "versicolor": 0.87, "virginica": 0.13}
+print(model.get_audit(X))         # Full reasoning trace
+
+# Save & reload
+model.to_json("model.json")
+model = Snake("model.json")       # Auto-detected by .json extension
+print(model.get_prediction(X))    # Same result
 ```
 
-## 📊 Data Structure
+## Input Formats
 
-### Input CSV Format
-```csv
-target,feature1,feature2,feature3
-1,5.2,"text A",100
-0,3.1,"text B",200
+Snake accepts five input formats. The first key/column is the target by default.
+
+| Format | Example | Notes |
+|--------|---------|-------|
+| List of dicts | `Snake([{"label": "A", ...}])` | Production pattern. First key = target |
+| CSV file | `Snake("data.csv", target_index=3)` | Pandas-formatted CSV |
+| DataFrame | `Snake(df, target_index="species")` | Duck-typed — no pandas dependency |
+| List of tuples | `Snake([("cat", 4, "small"), ...])` | First element = target, auto-headers |
+| List of scalars | `Snake(["apple", "banana", ...])` | Self-classing, dedupes to unique |
+
+**List of dicts** (recommended):
+```python
+model = Snake([
+    {"survived": 1, "class": 3, "sex": "male",   "age": 22},
+    {"survived": 0, "class": 1, "sex": "female", "age": 38},
+])
 ```
 
-### Output JSON Format
-The saved model contains:
-- `population`: Training data
-- `header`: Column names
-- `clauses`: Learned logical rules
-- `lookalikes`: Indices of similar points
-- `datatypes`: Type of each column
-- `log`: Operation history
+**CSV file:**
+```python
+model = Snake("titanic.csv", target_index=0)
+```
 
-## ⚠️ Important Notes
+**DataFrame:**
+```python
+model = Snake(df, target_index="survived")
+```
 
-- CSV files must be formatted by pandas (`df.to_csv()`)
-- Triple quotes in CSV are handled automatically
-- Missing values are converted to 0 (numeric) or "" (text)
-- Complexity is O(n·log(n)·m·bucket²) where n = samples, m = features, bucket = bucket size
+**List of tuples:**
+```python
+model = Snake([("cat", 4, "small"), ("dog", 40, "large"), ("cat", 5, "small")])
+```
 
-## 📝 License
+**List of scalars** (self-classing — useful for synonym deduplication):
+```python
+model = Snake(["44.2 LowE", "44.2 bronze", "Float 4mm clair"])
+```
 
-© 2025-2026 Charles Dana / Monce SAS. All rights reserved.
+## Constructor Reference
 
-This software is **proprietary**. Source code is available for viewing and reference only. See [LICENSE](LICENSE) for details.
+```python
+Snake(Knowledge, target_index=0, excluded_features_index=(), n_layers=5, bucket=250, noise=0.25, vocal=False, saved=False)
+```
 
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `Knowledge` | str / list / DataFrame | — | CSV path, JSON model path, list of dicts/tuples/scalars, or DataFrame |
+| `target_index` | int / str | `0` | Target column index or name |
+| `excluded_features_index` | tuple/list | `()` | Column indices to exclude from training |
+| `n_layers` | int | `5` | Number of SAT layers to build (more = more accurate, slower) |
+| `bucket` | int | `250` | Max samples per bucket before splitting |
+| `noise` | float | `0.25` | Cross-bucket noise ratio for regularization |
+| `vocal` | bool | `False` | Print training progress |
+| `saved` | bool | `False` | Auto-save model after training (CSV flow only) |
 
+## Prediction API
 
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `get_prediction(X)` | value | Most probable class |
+| `get_probability(X)` | dict | `{class: probability}` for all classes |
+| `get_lookalikes(X)` | list | `[[index, class, condition], ...]` matched training samples |
+| `get_augmented(X)` | dict | Input enriched with Lookalikes, Probability, Prediction, Audit |
+| `get_audit(X)` | str | Full human-readable reasoning trace |
 
+```python
+X = {"petal_length": 4.3, "petal_width": 1.4}
 
+model.get_prediction(X)    # "versicolor"
+model.get_probability(X)   # {"setosa": 0.0, "versicolor": 0.87, "virginica": 0.13}
+model.get_lookalikes(X)    # [[42, "versicolor", [0, 5]], [87, "versicolor", [3]]]
+model.get_augmented(X)     # {**X, "Lookalikes": ..., "Probability": ..., "Prediction": ..., "Audit": ...}
+```
+
+**Audit output** (bucketed IF/ELIF/ELSE routing):
+```
+==================================================
+  LAYER 0
+==================================================
+  >>>   IF   "petal_width" > 0.8:
+  >>>     -> BUCKET 0 (78 members)
+        ELSE:
+            -> BUCKET 1 (42 members)
+
+  Within BUCKET 0:
+    12 lookalikes found
+    P(versicolor)       =  83.3% ████████████████░░░░
+    P(virginica)        =  16.7% ███░░░░░░░░░░░░░░░░░
+
+==================================================
+  GLOBAL SUMMARY (5 layers)
+==================================================
+  Total lookalikes: 47
+  P(versicolor) = 87.2%
+  P(virginica) = 10.6%
+  P(setosa) = 2.1%
+  >> PREDICTION: versicolor
+### END AUDIT ###
+```
+
+## Save & Load
+
+```python
+# Save
+model.to_json("model.json")
+
+# Load (auto-detected by .json extension)
+model = Snake("model.json")
+```
+
+The JSON file contains: `version`, `population`, `header`, `targets`, `datatypes`, `config`, `layers`, `log`.
+
+Backwards compatible — v0.1 flat JSON files (with `clauses` + `lookalikes` at top level) are automatically wrapped into the bucketed format on load.
+
+## Validation & Pruning
+
+```python
+# Score each layer on validation data, keep the top N
+model.make_validation(val_data, pruning_coef=0.5)
+
+# pruning_coef=0.5 keeps the best 50% of layers
+# Save the pruned model
+model.to_json("model_pruned.json")
+```
+
+`val_data` is a list of dicts (same format as training data, must include the target field).
+
+## CLI
+
+```bash
+# Train
+snake train data.csv --layers 5 --bucket 250 --noise 0.25 -o model.json --vocal
+
+# Predict
+snake predict model.json -q '{"petal_length": 4.3, "petal_width": 1.4}'
+snake predict model.json -q '{"petal_length": 4.3}' --audit
+
+# Model info
+snake info model.json
+```
+
+## Benchmarks
+
+Accuracy on classic sklearn datasets. 80/20 train/test split (seed=42), `bucket=250`, `noise=0.25`. Run `python benchmarks.py` to reproduce.
+
+**`n_layers=5`**
+
+| Dataset | Type | Samples | Features | Classes | Train Acc | Test Acc | Train Time | Inference |
+|---------|------|---------|----------|---------|-----------|----------|------------|-----------|
+| Iris | Multi | 150 | 4 | 3 | 100.0% | 96.7% | 0.0s | 0.2ms |
+| Wine | Multi | 178 | 13 | 3 | 100.0% | 97.2% | 0.0s | 0.2ms |
+| Breast Cancer | Binary | 569 | 30 | 2 | 100.0% | 96.5% | 0.1s | 0.6ms |
+| Digits | Multi | 1797 | 64 | 10 | 100.0% | 90.6% | 1.9s | 1.2ms |
+
+**`n_layers=15`**
+
+| Dataset | Type | Samples | Features | Classes | Train Acc | Test Acc | Train Time | Inference |
+|---------|------|---------|----------|---------|-----------|----------|------------|-----------|
+| Iris | Multi | 150 | 4 | 3 | 100.0% | 100.0% | 0.0s | 0.5ms |
+| Wine | Multi | 178 | 13 | 3 | 100.0% | 97.2% | 0.0s | 0.7ms |
+| Breast Cancer | Binary | 569 | 30 | 2 | 100.0% | 95.6% | 0.3s | 1.9ms |
+| Digits | Multi | 1797 | 64 | 10 | 100.0% | 95.3% | 5.6s | 3.6ms |
+
+**`n_layers=50`**
+
+| Dataset | Type | Samples | Features | Classes | Train Acc | Test Acc | Train Time | Inference |
+|---------|------|---------|----------|---------|-----------|----------|------------|-----------|
+| Iris | Multi | 150 | 4 | 3 | 100.0% | 100.0% | 0.1s | 1.7ms |
+| Wine | Multi | 178 | 13 | 3 | 100.0% | 100.0% | 0.1s | 2.3ms |
+| Breast Cancer | Binary | 569 | 30 | 2 | 100.0% | 97.4% | 0.9s | 6.3ms |
+| Digits | Multi | 1797 | 64 | 10 | 100.0% | 96.1% | 19.1s | 11.8ms |
+
+More layers improve test accuracy at the cost of training time and inference latency. Benchmark script requires `pandas` and `scikit-learn` for data loading/splitting only — Snake itself has zero dependencies.
+
+## Architecture
+
+```
+Input X
+   │
+   ▼
+┌─────────────────────────────────────────┐
+│         Bucket Chain (IF/ELIF/ELSE)      │
+│                                          │
+│  IF  condition_0(X):  → Bucket 0         │
+│  ELIF condition_1(X): → Bucket 1         │
+│  ELIF condition_2(X): → Bucket 2         │
+│  ELSE:                → Bucket N         │
+│                                          │
+│  Each condition = AND of SAT literals    │
+│  Each bucket ≤ 250 samples               │
+└─────────────┬───────────────────────────┘
+              │
+              ▼
+┌─────────────────────────────────────────┐
+│         Local SAT (per bucket)           │
+│                                          │
+│  For each target class:                  │
+│    Build minimal clauses separating      │
+│    positive from negative samples        │
+│                                          │
+│  Discriminating literals:                │
+│    T   — substring present/absent        │
+│    TN  — string length threshold         │
+│    TLN — alphabet size threshold         │
+│    TWS — word count threshold            │
+│    N   — numeric threshold               │
+└─────────────┬───────────────────────────┘
+              │
+              ▼
+┌─────────────────────────────────────────┐
+│         Lookalike Voting                 │
+│                                          │
+│  Find training samples matching X        │
+│  via SAT clause satisfaction             │
+│                                          │
+│  Vote by target labels → probability     │
+│  Return max probability class            │
+└─────────────────────────────────────────┘
+```
+
+Repeated across `n_layers` independent layers. Final prediction aggregates all lookalikes across all layers.
+
+Complexity: `O(n * log(n) * m * bucket²)` where n = samples, m = features.
+
+## License
+
+Proprietary. Source code is available for viewing and reference only.
+
+See [LICENSE](LICENSE) for details. For licensing inquiries: contact@monce.ai
