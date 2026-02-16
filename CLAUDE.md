@@ -9,8 +9,9 @@ Author: Charles Dana / Monce SAS. Charles is the user you're talking to.
 
 ```
 algorithmeai/
-  __init__.py          # Exports: Snake, floatconversion, __version__ = "4.2.0"
-  snake.py             # The entire classifier (~1113 lines, zero dependencies)
+  __init__.py          # Exports: Snake, floatconversion, __version__ = "4.3.0"
+  snake.py             # The entire classifier (~1200 lines, zero dependencies)
+  _accel.pyx           # Optional Cython hot paths (apply_literal, apply_clause, traverse_chain)
   cli.py               # CLI: snake train / predict / info
 tests/
   test_snake.py        # 5 input modes, save/load, backwards compat
@@ -53,7 +54,7 @@ Snake(Knowledge, target_index=0, excluded_features_index=(), n_layers=5, bucket=
 - `n_layers=5` — NOT 100 (old README was wrong). More layers = better accuracy but slower.
 - `bucket=250` — max samples per bucket before the chain splits.
 - `noise=0.25` — 25% cross-bucket noise for regularization. Set to 0 for strict partitioning.
-- `vocal=False` — set to `True` to see training progress. Training ALWAYS prints the banner header regardless.
+- `vocal=False` — set to `True` to see training progress and the banner header.
 - `saved=False` — only used in CSV flow. If `True`, auto-saves to `snakeclassifier.json` after training.
 
 ### Production Pattern (list[dict])
@@ -99,7 +100,7 @@ All take a dict `X` with feature keys (NOT the target key):
 ### Save & Load
 
 ```python
-# Save — always writes v4.2.0 bucketed format
+# Save — always writes v4.3.0 bucketed format
 model.to_json("model.json")       # or any path
 model.to_json()                    # defaults to "snakeclassifier.json"
 
@@ -109,15 +110,15 @@ model = Snake("model.json")       # skips training entirely
 
 **Backwards compatibility:** If the JSON has `clauses` + `lookalikes` at top level but no `layers` key, it's v0.1 flat format. `from_json` wraps it into a single ELSE bucket automatically. No migration needed.
 
-**JSON structure (v4.2.0):**
+**JSON structure (v4.3.0):**
 ```json
 {
-  "version": "4.2.0",
+  "version": "4.3.0",
   "population": [...],           // list of dicts (training data)
   "header": ["target", "f1", ...],
   "target": "target",            // target column name
   "targets": [...],              // target values array (parallel to population)
-  "datatypes": ["T", "N", ...],  // B=binary, I=integer, N=numeric, T=text
+  "datatypes": ["T", "N", ...],  // B=binary, I=integer, N=numeric, T=text, J=complex JSON (dict/list)
   "config": {"n_layers": 5, "bucket": 250, "noise": 0.25, "vocal": false},
   "layers": [...],               // bucketed layer data
   "log": "..."                   // training log string
@@ -141,11 +142,12 @@ model.to_json("pruned.json")
 Snake auto-detects types for each column. The logic (in order of priority):
 
 **Target column (`_detect_target_type`):**
-1. Values are exactly `{"0", "1"}` → Binary (`B`), stored as `int`
-2. Values are exactly `{"True", "False"}` or `{"TRUE", "FALSE"}` → Binary (`B`), stored as `int`
-3. All characters in `0-9` only → Integer multiclass (`I`), stored as `int`
-4. All characters in `+-.0123456789e` → Numeric multiclass (`N`), stored as `float`
-5. Otherwise → Text multiclass (`T`), stored as `str`
+1. Any value is `dict` or `list` → Complex JSON (`J`), stored as-is (raw Python objects)
+2. Values are exactly `{"0", "1"}` → Binary (`B`), stored as `int`
+3. Values are exactly `{"True", "False"}` or `{"TRUE", "FALSE"}` → Binary (`B`), stored as `int`
+4. All characters in `0-9` only → Integer multiclass (`I`), stored as `int`
+5. All characters in `+-.0123456789e` → Numeric multiclass (`N`), stored as `float`
+6. Otherwise → Text multiclass (`T`), stored as `str`
 
 **Feature columns:** Same numeric vs text test (step 4 vs 5 above). No Binary/Integer distinction for features.
 
@@ -161,7 +163,7 @@ The hash is a string concatenation of all feature values (not a proper hash func
 
 ## The Banner Print
 
-`Snake.__init__` ALWAYS calls `print(self.log)` on line 135, printing the ASCII banner. This happens even with `vocal=False`. There is no way to suppress it short of redirecting stdout. If you're using Snake in an API, this print goes to server logs — it's harmless but visible.
+As of v4.3.0, the banner only prints when `vocal=True`. Previously it printed unconditionally.
 
 ## Error Handling
 
@@ -292,7 +294,7 @@ snake info model.json
 ```bash
 snake info model.json
 # Output:
-#   Snake model v4.2.0
+#   Snake model v4.3.0
 #   Target: species
 #   Population: 150
 #   Layers: 5
@@ -331,6 +333,26 @@ import random
 random.seed(42)
 model = Snake(data, n_layers=5)
 ```
+
+## Optional Cython Acceleration
+
+Snake v4.3.0 includes optional Cython-accelerated hot paths in `algorithmeai/_accel.pyx`:
+
+```python
+try:
+    from ._accel import apply_literal_fast, apply_clause_fast, traverse_chain_fast
+    _HAS_ACCEL = True
+except ImportError:
+    _HAS_ACCEL = False
+```
+
+When the compiled extension is available, `apply_literal`, `apply_clause`, and `get_lookalikes` delegate to the Cython versions. Install with:
+
+```bash
+pip install -e ".[fast]" && python setup.py build_ext --inplace
+```
+
+Without Cython, pure Python runs identically. The `_HAS_ACCEL` flag is checked at function call time.
 
 ## Common Patterns
 
@@ -385,9 +407,9 @@ audit = model.get_audit(X)
 
 ## Things That Will Bite You
 
-1. **The banner prints to stdout.** Always. Even with `vocal=False`. Don't parse stdout for results.
+1. **The banner prints to stdout with `vocal=True` only.** As of v4.3.0, set `vocal=False` to suppress the banner.
 
-2. **`get_augmented` calls every prediction method.** It calls `get_lookalikes`, `get_probability`, `get_prediction`, and `get_audit` — each of which calls `get_lookalikes` internally. That's 4 full inference passes. Use individual methods if you only need some outputs.
+2. **`get_augmented` is now efficient.** As of v4.3.0, it calls `get_lookalikes` once and derives probability, prediction, and audit from that single pass. No longer 4x overhead.
 
 3. **Target type must match at prediction time.** If training targets were `int` (e.g., `0`, `1`), your prediction comparison is against `int`. If they were `str` (e.g., `"cat"`, `"dog"`), comparison is against `str`. Mixing types silently fails to match.
 

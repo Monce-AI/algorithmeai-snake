@@ -11,7 +11,7 @@ SAMPLE_CSV = os.path.join(FIXTURES, "sample.csv")
 
 
 def test_version():
-    assert __version__ == "4.2.0"
+    assert __version__ == "4.3.0"
 
 
 def test_floatconversion():
@@ -138,6 +138,84 @@ class TestDataFrameMode:
         ])
         s = Snake(df, n_layers=2, bucket=3, vocal=False)
         assert s.target == "species"
+
+
+# ---- Backwards compat: flat JSON ----
+
+# ---- Mode 6: Complex JSON targets (dict/list) ----
+
+class TestComplexJsonTargets:
+    def test_dict_targets(self):
+        """Train with dict targets, check datatype is J."""
+        data = [
+            {"label": {"color": "red", "size": "big"}, "feature1": "a", "feature2": 1},
+            {"label": {"color": "red", "size": "big"}, "feature1": "b", "feature2": 2},
+            {"label": {"color": "blue", "size": "small"}, "feature1": "c", "feature2": 3},
+            {"label": {"color": "blue", "size": "small"}, "feature1": "d", "feature2": 4},
+            {"label": {"color": "green", "size": "medium"}, "feature1": "e", "feature2": 5},
+            {"label": {"color": "green", "size": "medium"}, "feature1": "f", "feature2": 6},
+        ]
+        s = Snake(data, n_layers=2, bucket=3, vocal=False)
+        assert s.datatypes[0] == "J"
+        assert len(s.population) > 0
+
+    def test_dict_target_prediction(self):
+        """Prediction should return the original dict, not a string."""
+        data = [
+            {"label": {"type": "A"}, "x": "hello", "y": 10},
+            {"label": {"type": "A"}, "x": "world", "y": 20},
+            {"label": {"type": "B"}, "x": "foo", "y": 30},
+            {"label": {"type": "B"}, "x": "bar", "y": 40},
+        ]
+        s = Snake(data, n_layers=2, bucket=3, vocal=False)
+        pred = s.get_prediction({"x": "hello", "y": 10})
+        assert isinstance(pred, dict)
+        assert "type" in pred
+
+    def test_dict_target_probability_sums_to_one(self):
+        """Probability values should sum to 1.0 even with dict targets."""
+        data = [
+            {"label": {"v": 1}, "f": "a"},
+            {"label": {"v": 1}, "f": "b"},
+            {"label": {"v": 2}, "f": "c"},
+            {"label": {"v": 2}, "f": "d"},
+        ]
+        s = Snake(data, n_layers=2, bucket=3, vocal=False)
+        prob = s.get_probability({"f": "a"})
+        assert abs(sum(prob.values()) - 1.0) < 1e-9
+
+    def test_dict_target_save_load(self):
+        """JSON round-trip should preserve complex targets."""
+        data = [
+            {"label": {"color": "red"}, "feat": "x"},
+            {"label": {"color": "red"}, "feat": "y"},
+            {"label": {"color": "blue"}, "feat": "z"},
+            {"label": {"color": "blue"}, "feat": "w"},
+        ]
+        s = Snake(data, n_layers=2, bucket=3, vocal=False)
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = f.name
+        try:
+            s.to_json(path)
+            s2 = Snake(path)
+            assert s2.datatypes[0] == "J"
+            pred = s2.get_prediction({"feat": "x"})
+            assert isinstance(pred, dict)
+        finally:
+            os.unlink(path)
+
+    def test_list_targets(self):
+        """Train with list targets."""
+        data = [
+            {"label": [1, 2], "f": "a"},
+            {"label": [1, 2], "f": "b"},
+            {"label": [3, 4], "f": "c"},
+            {"label": [3, 4], "f": "d"},
+        ]
+        s = Snake(data, n_layers=2, bucket=3, vocal=False)
+        assert s.datatypes[0] == "J"
+        pred = s.get_prediction({"f": "a"})
+        assert isinstance(pred, list)
 
 
 # ---- Backwards compat: flat JSON ----

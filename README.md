@@ -5,7 +5,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-Proprietary-red.svg?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAxTDMgNXY2YzcgNCA4LjUgOC40IDkgMTIuOEM5LjUgMjAuNCA4IDE2IDggMTFWNmw0LTIuNUwxNiA2djVjMCA1LTEuNSA5LjQtNCAxa)](LICENSE)
-[![Version](https://img.shields.io/badge/v4.2.0-SAT_Bucketed-blueviolet.svg?logo=semanticrelease)](https://github.com/Monce-AI/algorithmeai-snake)
+[![Version](https://img.shields.io/badge/v4.3.0-SAT_Bucketed-blueviolet.svg?logo=semanticrelease)](https://github.com/Monce-AI/algorithmeai-snake)
 [![Build](https://img.shields.io/badge/Build-Passing-brightgreen.svg?logo=githubactions&logoColor=white)](#)
 
 [![Production](https://img.shields.io/badge/Production-Live_on_AWS-FF9900.svg?logo=amazonaws&logoColor=white)](https://snake.aws.monce.ai)
@@ -119,6 +119,16 @@ model = Snake([("cat", 4, "small"), ("dog", 40, "large"), ("cat", 5, "small")])
 **List of scalars** (self-classing — useful for synonym deduplication):
 ```python
 model = Snake(["44.2 LowE", "44.2 bronze", "Float 4mm clair"])
+```
+
+**Complex targets** (dict/list values as targets):
+```python
+data = [
+    {"label": {"color": "red", "size": "big"}, "feature": "round"},
+    {"label": {"color": "blue", "size": "small"}, "feature": "square"},
+]
+model = Snake(data, n_layers=5)
+pred = model.get_prediction({"feature": "round"})  # returns {"color": "red", "size": "big"}
 ```
 
 ## Constructor Reference
@@ -306,6 +316,18 @@ Input X
 Repeated across `n_layers` independent layers. Final prediction aggregates all lookalikes across all layers.
 
 Complexity: `O(n * log(n) * m * bucket²)` where n = samples, m = features.
+
+## Optional: Cython Acceleration
+
+Snake includes optional Cython-accelerated hot paths for `apply_literal`, `apply_clause`, and `traverse_chain`. When compiled, these provide significant speedups for both training and inference.
+
+```bash
+# Install with Cython support
+pip install -e ".[fast]"
+python setup.py build_ext --inplace
+```
+
+Without Cython, Snake runs in pure Python with identical behavior. The Cython extension is auto-detected at import time.
 
 ## License
 

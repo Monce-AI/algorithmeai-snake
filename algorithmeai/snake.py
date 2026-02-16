@@ -2,11 +2,19 @@ import json
 from random import choice, sample
 from time import time
 
+try:
+    from ._accel import (apply_literal_fast, apply_clause_fast,
+                         traverse_chain_fast, get_lookalikes_fast,
+                         batch_predict_fast)
+    _HAS_ACCEL = True
+except ImportError:
+    _HAS_ACCEL = False
+
 ################################################################
 #                                                              #
 #    Algorithme.ai : Snake         Author : Charles Dana       #
 #                                                              #
-#    v4.2.0 — SAT-ensembled bucketed multiclass classifier     #
+#    v4.3.0 — SAT-ensembled bucketed multiclass classifier     #
 #                                                              #
 ################################################################
 
@@ -25,6 +33,25 @@ def floatconversion(txt):
 # Bucket helpers (pure functions, no self)
 # ---------------------------------------------------------------------------
 
+def _unique_vals(targets, indices):
+    """Deduplicate target values for a set of indices, handling unhashable types."""
+    seen = set()
+    result = []
+    for i in indices:
+        t = targets[i]
+        try:
+            k = t
+            if k not in seen:
+                seen.add(k)
+                result.append(t)
+        except TypeError:
+            k = json.dumps(t, sort_keys=True)
+            if k not in seen:
+                seen.add(k)
+                result.append(t)
+    return result
+
+
 def build_condition(matching, population, targets, bucket, oppose_fn, apply_literal_fn, max_retries=50, log_fn=None):
     """AND of oppose literals that peels ~bucket elements from matching."""
     condition = []
@@ -32,7 +59,7 @@ def build_condition(matching, population, targets, bucket, oppose_fn, apply_lite
     t_start = time()
     n_literals = 0
     while len(matching) > 2 * bucket and retries < max_retries:
-        target_vals = list(set(targets[i] for i in matching))
+        target_vals = _unique_vals(targets, matching)
         if len(target_vals) < 2:
             if log_fn:
                 log_fn(f"#     [condition] only 1 target left in {len(matching)} samples, stopping")
@@ -73,7 +100,7 @@ def build_bucket_chain(population, targets, bucket, oppose_fn, apply_literal_fn,
     while len(remaining) > 2 * bucket:
         t_branch = time()
         if log_fn:
-            n_targets_remaining = len(set(targets[i] for i in remaining))
+            n_targets_remaining = len(_unique_vals(targets, remaining))
             log_fn(f"#   [bucket_chain] --- BRANCH {branch_idx} --- {len(remaining)} remaining, {n_targets_remaining} unique targets")
         condition, selected = build_condition(
             remaining, population, targets, bucket,
@@ -128,19 +155,20 @@ class Snake():
 #                                                              #
 #    Algorithme.ai : Snake         Author : Charles Dana       #
 #                                                              #
-#    v4.2.0 — SAT-ensembled bucketed multiclass classifier     #
+#    v4.3.0 — SAT-ensembled bucketed multiclass classifier     #
 #                                                              #
 ################################################################
 """
-        print(self.log)
-        self.population = 0
-        self.header = 0
-        self.target = 0
-        self.targets = 0
-        self.datatypes = 0
+        if vocal:
+            print(self.log)
+        self.population = []
+        self.header = []
+        self.target = None
+        self.targets = []
+        self.datatypes = []
         self.layers = []
         self.clauses = []
-        self.lookalikes = 0
+        self.lookalikes = {}
         self.n_layers = n_layers
         self.bucket = bucket
         self.noise = noise
@@ -175,7 +203,7 @@ class Snake():
         self.datatypes = []
         targets = [self.make_bloc_from_line(row)[target_index] for row in rows]
         self._detect_target_type(targets)
-        occurences_vector = {targ : sum((trg == targ for trg in self.targets)) for targ in set(self.targets)}
+        occurences_vector = self._target_counts()
         self.qprint(f"# Algorithme.ai : Occurence Vector {occurences_vector}")
         for t in range(1, len(self.header)):
             hi = header_index[t]
@@ -198,7 +226,7 @@ class Snake():
         self.target = self.header[0]
         self.targets = [dp[self.target] for dp in pp]
         self.population = pp
-        unique = len(set(self.targets))
+        unique = len(self._unique_targets())
         self.qprint(f"# Population ready: {len(pp)} samples, {unique} unique targets, {len(self.header)-1} features")
         self._train(saved)
 
@@ -214,7 +242,12 @@ class Snake():
 
         targets = [row[ti] for row in rows]
         self.datatypes = []
-        self._detect_target_type([str(t) for t in targets])
+        # Check for complex (dict/list) targets before stringifying
+        has_complex = any(isinstance(t, (dict, list)) for t in targets)
+        if has_complex:
+            self._detect_target_type(targets, raw=True)
+        else:
+            self._detect_target_type([str(t) for t in targets])
 
         # Detect feature types
         header_index = [ti] + [i for i in range(len(header)) if i != ti]
@@ -241,7 +274,9 @@ class Snake():
                 h = self.header[i]
                 dtt = self.datatypes[i]
                 val = reordered[i]
-                if dtt in "NIB":
+                if dtt == "J":
+                    item[h] = val
+                elif dtt in "NIB":
                     item[h] = floatconversion(str(val)) if dtt == "N" else int(floatconversion(str(val)))
                 else:
                     item[h] = str(val)
@@ -256,7 +291,7 @@ class Snake():
         self.population = pp
         self.target = self.header[0]
         self.targets = [dp[self.target] for dp in pp]
-        unique = len(set(self.targets))
+        unique = len(self._unique_targets())
         self.qprint(f"# Population ready: {len(pp)} samples, {unique} unique targets, {len(self.header)-1} features")
         self.qprint(f"# Deduplication: {len(rows)} rows -> {len(pp)} unique ({len(rows) - len(pp)} dropped)")
         self._train(False)
@@ -314,8 +349,14 @@ class Snake():
     # ------------------------------------------------------------------
     # Target type detection (shared by both flows)
     # ------------------------------------------------------------------
-    def _detect_target_type(self, targets):
-        """Detect target column type from string values. Appends to self.datatypes and sets self.targets."""
+    def _detect_target_type(self, targets, raw=False):
+        """Detect target column type from string values (or raw values if raw=True). Appends to self.datatypes and sets self.targets."""
+        if raw and any(isinstance(t, (dict, list)) for t in targets):
+            self.datatypes = ["J"]
+            self.targets = list(targets)
+            n_unique = len(self._unique_targets())
+            self.qprint(f"# Algorithme.ai : Snake Analysis on {self.target} a complex JSON target problem ({n_unique} unique)")
+            return
         universe = set("".join(targets))
         if sorted(list(set(targets))) == ["0", "1"]:
             self.datatypes = ["B"]
@@ -352,8 +393,8 @@ class Snake():
         self.clauses = []
         self.lookalikes = {str(l): [] for l in range(len(self.population))}
 
-        unique_targets = sorted(list(set(self.targets)))
-        target_counts = {t: self.targets.count(t) for t in unique_targets}
+        unique_targets = self._sorted_unique_targets()
+        target_counts = self._target_counts()
 
         self.qprint(f"#")
         self.qprint(f"# ============================================================")
@@ -368,10 +409,10 @@ class Snake():
         self.qprint(f"#   Noise:         {self.noise}")
         self.qprint(f"#   Vocal:         {self.vocal}")
         self.qprint(f"#")
-        top_5 = sorted(target_counts.items(), key=lambda x: -x[1])[:5]
+        top_5 = sorted(target_counts, key=lambda x: -x[1])[:5]
         self.qprint(f"#   Top classes:   {', '.join(f'{t}({c})' for t, c in top_5)}")
-        min_class = min(target_counts.values())
-        max_class = max(target_counts.values())
+        min_class = min(c for _, c in target_counts)
+        max_class = max(c for _, c in target_counts)
         self.qprint(f"#   Class range:   min={min_class}, max={max_class}, avg={len(self.population)/len(unique_targets):.1f}")
         self.qprint(f"# ============================================================")
         self.qprint(f"#")
@@ -423,6 +464,50 @@ class Snake():
         if v >= level:
             print(txt)
         self.log += str(txt) + "\n"
+
+    def __repr__(self):
+        n = len(self.population) if isinstance(self.population, list) else 0
+        return f"Snake(target={self.target!r}, population={n}, layers={len(self.layers)})"
+
+    # ------------------------------------------------------------------
+    # Target-key helpers (support unhashable dict/list targets)
+    # ------------------------------------------------------------------
+
+    def _target_key(self, t):
+        """Return a hashable key for a target value. Simple types pass through; dicts/lists get JSON-serialized."""
+        if isinstance(t, (dict, list)):
+            return json.dumps(t, sort_keys=True)
+        return t
+
+    def _unique_targets(self):
+        """Return deduplicated list of targets preserving order."""
+        seen = set()
+        result = []
+        for t in self.targets:
+            k = self._target_key(t)
+            if k not in seen:
+                seen.add(k)
+                result.append(t)
+        return result
+
+    def _target_counts(self):
+        """Return list of (target, count) tuples using _target_key for hashing."""
+        counts_by_key = {}
+        first_val = {}
+        for t in self.targets:
+            k = self._target_key(t)
+            counts_by_key[k] = counts_by_key.get(k, 0) + 1
+            if k not in first_val:
+                first_val[k] = t
+        return [(first_val[k], c) for k, c in counts_by_key.items()]
+
+    def _sorted_unique_targets(self):
+        """Return sorted unique targets. Falls back to _target_key for non-orderable types."""
+        unique = self._unique_targets()
+        try:
+            return sorted(unique)
+        except TypeError:
+            return sorted(unique, key=lambda t: self._target_key(t))
 
     """
     Will parse a .csv line properly,
@@ -552,9 +637,9 @@ class Snake():
                     if todo == "TWS":
                         return [index, (len(F[h].split(" ")) + len(T[h].split(" "))) / 2, len(T[h].split(" ")) > len(F[h].split(" ")), "TWS"]
                     if todo == "TPS":
-                        return [index, (len(F[h].split(",")) + len(T[h].split(","))) / 2, len(T[h].split(",")) > len(F[h].split(",")), "TWS"]
+                        return [index, (len(F[h].split(",")) + len(T[h].split(","))) / 2, len(T[h].split(",")) > len(F[h].split(",")), "TPS"]
                     if todo == "TSS":
-                        return [index, (len(F[h].split(".")) + len(T[h].split("."))) / 2, len(T[h].split(".")) > len(F[h].split(".")), "TWS"]
+                        return [index, (len(F[h].split(".")) + len(T[h].split("."))) / 2, len(T[h].split(".")) > len(F[h].split(".")), "TSS"]
             pros = set()
             cons = set()
             for sep in [" ", "/", ":", "-"]:
@@ -574,6 +659,7 @@ class Snake():
                     return [index, F[h], True, "T"]
         if self.datatypes[index] == "N":
             return [index, (F[h] + T[h]) / 2, T[h] > F[h], "N"]
+        return None
 
     """
     Will return:
@@ -582,54 +668,53 @@ class Snake():
     Robust.
     """
     def apply_literal(self, X, literal):
+        if _HAS_ACCEL:
+            return apply_literal_fast(X, literal, self.header)
         index = literal[0]
         value = literal[1]
         negat = literal[2]
         datat = literal[3]
-        if not self.header[index] in X:
+        if self.header[index] not in X:
             return False
+        field = X[self.header[index]]
         if datat == "TWS":
-            if negat == True:
-                return value <= len(X[self.header[index]].split(" "))
-            if negat == False:
-                return value > len(X[self.header[index]].split(" "))
-        if datat == "TPS":
-            if negat == True:
-                return value <= len(X[self.header[index]].split(","))
-            if negat == False:
-                return value > len(X[self.header[index]].split(","))
-        if datat == "TSS":
-            if negat == True:
-                return value <= len(X[self.header[index]].split("."))
-            if negat == False:
-                return value > len(X[self.header[index]].split("."))
-        if datat == "TLN":
-            if negat == True:
-                return value <= len(list(set(X[self.header[index]])))
-            if negat == False:
-                return value > len(list(set(X[self.header[index]])))
-        if datat == "TN":
-            if negat == True:
-                return value <= len(X[self.header[index]])
-            if negat == False:
-                return value > len(X[self.header[index]])
-        if datat == "T":
-            if negat == True:
-                return not value in X[self.header[index]]
-            if negat == False:
-                return value in X[self.header[index]]
-        if datat == "N":
-            if negat == True:
-                return value <= X[self.header[index]]
-            if negat == False:
-                return value > X[self.header[index]]
+            if negat:
+                return value <= len(field.split(" "))
+            return value > len(field.split(" "))
+        elif datat == "TPS":
+            if negat:
+                return value <= len(field.split(","))
+            return value > len(field.split(","))
+        elif datat == "TSS":
+            if negat:
+                return value <= len(field.split("."))
+            return value > len(field.split("."))
+        elif datat == "TLN":
+            if negat:
+                return value <= len(list(set(field)))
+            return value > len(list(set(field)))
+        elif datat == "TN":
+            if negat:
+                return value <= len(field)
+            return value > len(field)
+        elif datat == "T":
+            if negat:
+                return value not in field
+            return value in field
+        elif datat == "N":
+            if negat:
+                return value <= field
+            return value > field
+        return False
 
     """
     Applies an or Statement on the literals
     """
     def apply_clause(self, X, clause):
+        if _HAS_ACCEL:
+            return apply_clause_fast(X, clause, self.header)
         for literal in clause:
-            if self.apply_literal(X, literal) == True:
+            if self.apply_literal(X, literal):
                 return True
         return False
 
@@ -641,21 +726,21 @@ class Snake():
     """
     def construct_clause(self, F, Ts):
         clause = [self.oppose(choice(Ts), F)]
-        Ts_remainder = [T for T in Ts if self.apply_literal(T, clause[-1]) == False]
+        Ts_remainder = [T for T in Ts if not self.apply_literal(T, clause[-1])]
         while len(Ts_remainder):
             clause += [self.oppose(choice(Ts_remainder), F)]
-            Ts_remainder = [T for T in Ts_remainder if self.apply_literal(T, clause[-1]) == False]
+            Ts_remainder = [T for T in Ts_remainder if not self.apply_literal(T, clause[-1])]
         i = 0
         while i < len(clause):
             sub_clause = [clause[j] for j in range(len(clause)) if i != j]
             minimal_test = False
             for T in Ts:
-                if self.apply_clause(T, sub_clause) == False:
+                if not self.apply_clause(T, sub_clause):
                     minimal_test = True
                     break
             if minimal_test:
                 i += 1
-            if minimal_test == False:
+            else:
                 clause = sub_clause
         return clause
 
@@ -669,8 +754,8 @@ class Snake():
         while len(Fs):
             F = choice(Fs)
             clause = self.construct_clause(F, Ts)
-            consequence = [i for i in range(len(self.population)) if self.targets[i] == target_value and self.apply_clause(self.population[i], clause) == False]
-            Fs = [F for F in Fs if self.apply_clause(F, clause) == True]
+            consequence = [i for i in range(len(self.population)) if self.targets[i] == target_value and not self.apply_clause(self.population[i], clause)]
+            Fs = [F for F in Fs if self.apply_clause(F, clause)]
             sat += [[clause, consequence]]
         return sat
 
@@ -682,7 +767,18 @@ class Snake():
         """Run construct_sat scoped to a bucket's member indices. Returns (clauses, lookalikes) with 0-based local indexing."""
         local_pop = [self.population[i] for i in member_indices]
         local_targets = [self.targets[i] for i in member_indices]
-        target_values = sorted(list(set(local_targets)))
+        # Deduplicate local targets using _target_key for unhashable types
+        seen_keys = set()
+        unique_local = []
+        for t in local_targets:
+            k = self._target_key(t)
+            if k not in seen_keys:
+                seen_keys.add(k)
+                unique_local.append(t)
+        try:
+            target_values = sorted(unique_local)
+        except TypeError:
+            target_values = sorted(unique_local, key=lambda t: self._target_key(t))
         local_clauses = []
         local_lookalikes = {str(l): [] for l in range(len(local_pop))}
 
@@ -703,8 +799,8 @@ class Snake():
             while len(Fs):
                 F = choice(Fs)
                 clause = self.construct_clause(F, Ts)
-                consequence = [i for i in range(len(local_pop)) if local_targets[i] == target_value and self.apply_clause(local_pop[i], clause) == False]
-                Fs = [F for F in Fs if self.apply_clause(F, clause) == True]
+                consequence = [i for i in range(len(local_pop)) if local_targets[i] == target_value and not self.apply_clause(local_pop[i], clause)]
+                Fs = [F for F in Fs if self.apply_clause(F, clause)]
                 sat += [[clause, consequence]]
 
             lookalikes_for_target = {str(l): [] for l in range(len(local_pop)) if local_targets[l] == target_value}
@@ -738,7 +834,7 @@ class Snake():
         t_layer = time()
         n = len(self.population)
         m = len(self.header) - 1
-        k = len(set(self.targets))
+        k = len(self._unique_targets())
         self.qprint(f"#   [layer] Building bucket chain... O(n={n}, m={m}, k={k})")
 
         chain = build_bucket_chain(
@@ -752,7 +848,7 @@ class Snake():
         for b_idx, entry in enumerate(chain):
             t_bucket = time()
             n_b = len(entry["members"])
-            k_b = len(set(self.targets[i] for i in entry["members"]))
+            k_b = len({self._target_key(self.targets[i]) for i in entry["members"]})
             # O(m * n_b^2) per bucket SAT construction
             complexity = m * n_b * n_b
             cond_type = f"IF({len(entry['condition'])} lit)" if entry["condition"] else "ELSE"
@@ -782,6 +878,8 @@ class Snake():
     Predict the probability vector for a given X
     """
     def get_lookalikes(self, X):
+        if _HAS_ACCEL:
+            return get_lookalikes_fast(self.layers, X, self.header, self.targets)
         all_lookalikes = []
         seen = set()
         for layer in self.layers:
@@ -799,37 +897,83 @@ class Snake():
                             all_lookalikes.append([global_idx, self.targets[global_idx], condition])
         return all_lookalikes
 
+    def _get_probability_from_lookalikes(self, lookalikes):
+        """Compute probability vector from a pre-computed lookalikes list.
+        Returns list of (target_value, probability) tuples to support unhashable targets."""
+        target_values = self._sorted_unique_targets()
+        if len(lookalikes) == 0:
+            return [(tv, 1 / len(target_values)) for tv in target_values]
+        return [(tv, sum((triple[1] == tv for triple in lookalikes)) / len(lookalikes)) for tv in target_values]
+
+    def _prob_to_dict(self, prob_tuples):
+        """Convert probability tuples to a dict. Uses _target_key for unhashable targets."""
+        try:
+            return {tv: p for tv, p in prob_tuples}
+        except TypeError:
+            return {self._target_key(tv): p for tv, p in prob_tuples}
+
+    def _prediction_from_prob(self, prob_tuples):
+        """Return the target value with highest probability from tuples list."""
+        best_tv, best_p = prob_tuples[0]
+        for tv, p in prob_tuples[1:]:
+            if p > best_p:
+                best_tv, best_p = tv, p
+        return best_tv
+
     """
     Gives the probability vector associated
     """
     def get_probability(self, X):
-        target_values = sorted(list(set(self.targets)))
         lookalikes = self.get_lookalikes(X)
-        if len(lookalikes) == 0:
-            probability = {target_value : 1/len(target_values) for target_value in target_values}
-        else:
-            probability = {target_value : sum((triple[1] == target_value for triple in lookalikes)) / len(lookalikes) for target_value in target_values}
-        return probability
+        return self._prob_to_dict(self._get_probability_from_lookalikes(lookalikes))
 
     """
     Predicts the outcome for a datapoint
     """
     def get_prediction(self, X):
-        probability = self.get_probability(X)
-        pr_max = max((probability[target] for target in probability))
-        prediction = [target for target in probability if probability[target] == pr_max][0]
-        return prediction
+        lookalikes = self.get_lookalikes(X)
+        prob_tuples = self._get_probability_from_lookalikes(lookalikes)
+        return self._prediction_from_prob(prob_tuples)
 
     """
     Augments a datapoint with every available information
     """
     def get_augmented(self, X):
         Y = X.copy()
-        Y["Lookalikes"] = self.get_lookalikes(X)
-        Y["Probability"] = self.get_probability(X)
-        Y["Prediction"] = self.get_prediction(X)
-        Y["Audit"] = self.get_audit(X)
+        lookalikes = self.get_lookalikes(X)
+        prob_tuples = self._get_probability_from_lookalikes(lookalikes)
+        probability = self._prob_to_dict(prob_tuples)
+        prediction = self._prediction_from_prob(prob_tuples)
+        Y["Lookalikes"] = lookalikes
+        Y["Probability"] = probability
+        Y["Prediction"] = prediction
+        Y["Audit"] = self._get_audit_with_precomputed(X, lookalikes, probability, prediction)
         return Y
+
+    """
+    Batch prediction for a list of datapoints.
+    Returns list of {"prediction": ..., "probability": ..., "confidence": ...} dicts.
+    Delegates to Cython batch_predict_fast when available for maximum throughput.
+    """
+    def get_batch_prediction(self, Xs):
+        if _HAS_ACCEL:
+            return batch_predict_fast(
+                self.layers, Xs, self.header, self.targets,
+                self._sorted_unique_targets()
+            )
+        results = []
+        for X in Xs:
+            lookalikes = self.get_lookalikes(X)
+            prob_tuples = self._get_probability_from_lookalikes(lookalikes)
+            probability = self._prob_to_dict(prob_tuples)
+            prediction = self._prediction_from_prob(prob_tuples)
+            confidence = max(p for _, p in prob_tuples)
+            results.append({
+                "prediction": prediction,
+                "probability": probability,
+                "confidence": confidence,
+            })
+        return results
 
     # ------------------------------------------------------------------
     # Enhanced Audit
@@ -891,8 +1035,14 @@ class Snake():
     R.A.G.
     """
     def get_audit(self, X):
-        probability = self.get_probability(X)
-        prediction = self.get_prediction(X)
+        lookalikes = self.get_lookalikes(X)
+        prob_tuples = self._get_probability_from_lookalikes(lookalikes)
+        probability = self._prob_to_dict(prob_tuples)
+        prediction = self._prediction_from_prob(prob_tuples)
+        return self._get_audit_with_precomputed(X, lookalikes, probability, prediction)
+
+    def _get_audit_with_precomputed(self, X, lookalikes, probability, prediction):
+        """Build audit string using pre-computed lookalikes, probability, and prediction."""
         audit = ""
 
         for layer_idx, chain in enumerate(self.layers):
@@ -902,7 +1052,6 @@ class Snake():
                 cond = entry["condition"]
                 n_members = len(entry["members"])
                 if cond is None:
-                    label = "ELSE"
                     prefix = "        ELSE:"
                 else:
                     parts = [self._format_literal_text(lit) for lit in cond]
@@ -943,15 +1092,18 @@ class Snake():
                 audit += f"    {len(local_lookalikes)} lookalikes found\n"
                 if local_lookalikes:
                     counts = {}
+                    key_to_val = {}
                     for t in local_lookalikes:
-                        counts[t] = counts.get(t, 0) + 1
-                    for t in sorted(counts, key=lambda k: -counts[k]):
-                        pct = 100 * counts[t] / len(local_lookalikes)
+                        k = self._target_key(t)
+                        counts[k] = counts.get(k, 0) + 1
+                        key_to_val[k] = t
+                    for k in sorted(counts, key=lambda x: -counts[x]):
+                        t = key_to_val[k]
+                        pct = 100 * counts[k] / len(local_lookalikes)
                         bar = self._format_bar(pct)
                         audit += f"    P({t}){' '*(20-len(str(t)))}= {pct:5.1f}% {bar}\n"
 
         audit += f"\n{'='*50}\n  GLOBAL SUMMARY ({len(self.layers)} layers)\n{'='*50}\n"
-        lookalikes = self.get_lookalikes(X)
         audit += f"  Total lookalikes: {len(lookalikes)}\n"
         for t in sorted(probability, key=lambda k: -probability[k]):
             if probability[t] > 0:
@@ -966,7 +1118,7 @@ class Snake():
 
     def to_json(self, fout="snakeclassifier.json"):
         snake_classifier = {
-            "version": "4.2.0",
+            "version": "4.3.0",
             "population": self.population,
             "header": self.header,
             "target": self.target,
@@ -1027,7 +1179,7 @@ class Snake():
         }]]
 
     def _load_bucketed(self, loaded_module):
-        """Load v4.2.0 bucketed format."""
+        """Load v4.3.0 bucketed format."""
         self.layers = loaded_module["layers"]
         self.clauses = []
         self.lookalikes = {str(l): [] for l in range(len(self.population))}
@@ -1076,9 +1228,13 @@ class Snake():
                             votes.append(self.targets[global_idx])
                 if votes:
                     counts = {}
+                    key_to_vote = {}
                     for v in votes:
-                        counts[v] = counts.get(v, 0) + 1
-                    pred = max(counts, key=counts.get)
+                        k = self._target_key(v)
+                        counts[k] = counts.get(k, 0) + 1
+                        key_to_vote[k] = v
+                    best_key = max(counts, key=counts.get)
+                    pred = key_to_vote[best_key]
                     if pred == target:
                         correct += 1
                 total += 1

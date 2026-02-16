@@ -128,7 +128,7 @@ class TestAudit:
 
     def test_log_contains_banner(self):
         s = Snake(SAMPLE_CSV, target_index=3, n_layers=1, bucket=5, vocal=False)
-        assert "v4.2.0" in s.log
+        assert "v4.3.0" in s.log
         assert "Charles Dana" in s.log
 
 
@@ -140,3 +140,74 @@ class TestFIFODedup:
         lookalikes = s.get_lookalikes(X)
         seen_indices = [triple[0] for triple in lookalikes]
         assert len(seen_indices) == len(set(seen_indices))
+
+
+class TestBatchPrediction:
+    def test_batch_returns_list(self):
+        s = Snake(SAMPLE_CSV, target_index=3, n_layers=2, bucket=5, vocal=False)
+        Xs = [
+            {"color": "red", "size": 10.0, "shape": "circle"},
+            {"color": "blue", "size": 20.0, "shape": "square"},
+        ]
+        results = s.get_batch_prediction(Xs)
+        assert len(results) == 2
+        for r in results:
+            assert "prediction" in r
+            assert "probability" in r
+            assert "confidence" in r
+            assert r["prediction"] in ["A", "B", "C"]
+            assert abs(sum(r["probability"].values()) - 1.0) < 1e-9
+            assert 0.0 <= r["confidence"] <= 1.0
+
+    def test_batch_matches_individual(self):
+        s = Snake(SAMPLE_CSV, target_index=3, n_layers=2, bucket=5, vocal=False)
+        X = {"color": "red", "size": 10.0, "shape": "circle"}
+        batch_result = s.get_batch_prediction([X])[0]
+        individual_pred = s.get_prediction(X)
+        assert batch_result["prediction"] == individual_pred
+
+
+class TestApplyLiteralTypes:
+    """Tests for TPS/TSS literal types and edge cases."""
+
+    def _make_snake(self):
+        return Snake(SAMPLE_CSV, target_index=3, n_layers=1, bucket=5, vocal=False)
+
+    def test_apply_literal_tps(self):
+        """TPS literal should split on comma."""
+        s = self._make_snake()
+        # TPS literal: [index, threshold, negat, "TPS"]
+        # header[1] is "color" in sample.csv
+        X = {s.header[1]: "a,b,c"}
+        # 3 parts, threshold 2.0, negat=True means >= 2.0
+        literal = [1, 2.0, True, "TPS"]
+        assert s.apply_literal(X, literal) is True
+        # negat=False means > 2.0 (i.e. 2.0 > 3 is False)
+        literal_neg = [1, 2.0, False, "TPS"]
+        assert s.apply_literal(X, literal_neg) is False
+
+    def test_apply_literal_tss(self):
+        """TSS literal should split on period."""
+        s = self._make_snake()
+        X = {s.header[1]: "a.b.c"}
+        # 3 sentences, threshold 2.0, negat=True means >= 2.0
+        literal = [1, 2.0, True, "TSS"]
+        assert s.apply_literal(X, literal) is True
+        literal_neg = [1, 2.0, False, "TSS"]
+        assert s.apply_literal(X, literal_neg) is False
+
+    def test_apply_literal_missing_key_returns_false(self):
+        """Missing key should return False, not None."""
+        s = self._make_snake()
+        X = {}  # empty dict
+        literal = [1, "test", False, "T"]
+        result = s.apply_literal(X, literal)
+        assert result is False
+
+    def test_apply_literal_unknown_datat_returns_false(self):
+        """Unknown datatype should return False explicitly."""
+        s = self._make_snake()
+        X = {s.header[1]: "hello"}
+        literal = [1, "test", False, "UNKNOWN"]
+        result = s.apply_literal(X, literal)
+        assert result is False
