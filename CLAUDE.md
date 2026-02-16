@@ -9,7 +9,7 @@ Author: Charles Dana / Monce SAS. Charles is the user you're talking to.
 
 ```
 algorithmeai/
-  __init__.py          # Exports: Snake, floatconversion, __version__ = "4.3.2"
+  __init__.py          # Exports: Snake, floatconversion, __version__ = "4.3.3"
   snake.py             # The entire classifier (~1300 lines, zero dependencies)
   _accel.pyx           # Optional Cython hot paths (inference + training acceleration)
   cli.py               # CLI: snake train / predict / info
@@ -22,6 +22,8 @@ tests/
   test_edge_cases.py   # Errors, type detection, extreme params, prediction edges
   test_cli.py          # CLI train/predict/info via subprocess
   test_logging.py      # Logging migration validation
+  test_stress.py       # Stress tests
+  test_ultimate_stress.py  # Extended stress tests
   fixtures/sample.csv  # 15-row toy dataset (color, size, shape -> label A/B/C)
 benchmarks.py          # Benchmark script (sklearn + Spaceship Titanic)
 pyproject.toml         # Build config, hatchling, proprietary license
@@ -106,7 +108,7 @@ All take a dict `X` with feature keys (NOT the target key):
 ### Save & Load
 
 ```python
-# Save — always writes v4.3.2 bucketed format
+# Save — always writes v4.3.3 bucketed format
 model.to_json("model.json")       # or any path
 model.to_json()                    # defaults to "snakeclassifier.json"
 
@@ -116,10 +118,10 @@ model = Snake("model.json")       # skips training entirely
 
 **Backwards compatibility:** If the JSON has `clauses` + `lookalikes` at top level but no `layers` key, it's v0.1 flat format. `from_json` wraps it into a single ELSE bucket automatically. No migration needed.
 
-**JSON structure (v4.3.2):**
+**JSON structure (v4.3.3):**
 ```json
 {
-  "version": "4.3.2",
+  "version": "4.3.3",
   "population": [...],           // list of dicts (training data)
   "header": ["target", "f1", ...],
   "target": "target",            // target column name
@@ -167,7 +169,7 @@ Both CSV and list[dict] flows deduplicate by hashing all **feature values** (not
 
 The hash is a string concatenation of all feature values (not a proper hash function). It's fast but depends on string representation stability.
 
-## Logging (v4.3.2)
+## Logging (v4.3.3)
 
 Snake uses Python's `logging` module internally. Each `Snake` instance gets its own logger (`snake.<id>`).
 
@@ -188,7 +190,7 @@ Snake uses Python's `logging` module internally. Each `Snake` instance gets its 
 
 ## The Banner Print
 
-As of v4.3.2, the banner only prints when `vocal=True`. Previously it printed unconditionally.
+As of v4.3.3, the banner only prints when `vocal=True`. Previously it printed unconditionally.
 
 ## Error Handling
 
@@ -320,7 +322,7 @@ snake info model.json
 ```bash
 snake info model.json
 # Output:
-#   Snake model v4.3.2
+#   Snake model v4.3.3
 #   Target: species
 #   Population: 150
 #   Layers: 5
@@ -339,17 +341,19 @@ snake info model.json
 ## Testing
 
 ```bash
-pytest                              # runs all 92 tests
-pytest tests/test_snake.py          # input modes, save/load, augmented, vocal, dedup
-pytest tests/test_buckets.py        # bucket chain, noise, routing, audit, dedup
-pytest tests/test_core_algorithm.py # oppose, construct_clause, construct_sat
-pytest tests/test_validation.py     # make_validation / pruning
-pytest tests/test_edge_cases.py     # errors, type detection, extreme params, prediction edges
-pytest tests/test_cli.py            # CLI train/predict/info via subprocess
-pytest tests/test_logging.py        # logging buffer, JSON persistence, banner
+pytest                                # runs all 151 tests
+pytest tests/test_snake.py            # input modes, save/load, augmented, vocal, dedup
+pytest tests/test_buckets.py          # bucket chain, noise, routing, audit, dedup
+pytest tests/test_core_algorithm.py   # oppose, construct_clause, construct_sat
+pytest tests/test_validation.py       # make_validation / pruning
+pytest tests/test_edge_cases.py       # errors, type detection, extreme params, prediction edges
+pytest tests/test_cli.py              # CLI train/predict/info via subprocess
+pytest tests/test_logging.py          # logging buffer, JSON persistence, banner
+pytest tests/test_stress.py           # stress tests
+pytest tests/test_ultimate_stress.py  # extended stress tests
 ```
 
-Tests use `tests/fixtures/sample.csv` (15 rows, 3 classes). All tests use small `n_layers` (1-3) and `bucket` (3-5) for speed.
+151 tests across 9 files. Tests use `tests/fixtures/sample.csv` (15 rows, 3 classes). All tests use small `n_layers` (1-3) and `bucket` (3-5) for speed.
 
 ## Stochastic Behavior
 
@@ -367,7 +371,7 @@ model = Snake(data, n_layers=5)
 
 ## Optional Cython Acceleration
 
-Snake v4.3.2 includes optional Cython-accelerated hot paths in `algorithmeai/_accel.pyx`:
+Snake v4.3.3 includes optional Cython-accelerated hot paths in `algorithmeai/_accel.pyx`:
 
 **Inference functions (v4.3.0):**
 - `apply_literal_fast` — single literal evaluation
@@ -376,7 +380,7 @@ Snake v4.3.2 includes optional Cython-accelerated hot paths in `algorithmeai/_ac
 - `get_lookalikes_fast` — full inference pipeline
 - `batch_predict_fast` — batch inference
 
-**Training functions (v4.3.2):**
+**Training functions (v4.3.3):**
 - `filter_ts_remainder_fast` — filter Ts by literal (used in construct_clause)
 - `minimize_clause_fast` — full clause minimization loop in C
 - `filter_indices_by_literal_fast` — index-based population filtering (used in build_condition)
@@ -472,9 +476,15 @@ audit = model.get_audit(X)
 
 8. **`exclude_features_index` only works with CSV flow.** The list[dict] and DataFrame flows don't support it — filter your data before passing it in.
 
-9. **Binary True/False targets are stored as int 0/1.** As of v4.3.2, `"True"`/`"False"` strings are correctly converted in both CSV and list[dict] flows. Compare predictions against `0`/`1` (int), not `"True"`/`"False"` (str).
+9. **Binary True/False targets are stored as int 0/1.** As of v4.3.3, `"True"`/`"False"` strings are correctly converted in both CSV and list[dict] flows. Compare predictions against `0`/`1` (int), not `"True"`/`"False"` (str).
 
 ## Changelog
+
+### v4.3.3 (Feb 2026)
+
+- **Cython infinite loop fix**: Fixed `oppose()` infinite loop in Cython hot paths
+- **`oppose()` canaries**: Added safety canaries to detect stuck loops
+- **151 tests**: Extended test suite from 92 to 151 tests across 9 files (added stress + ultimate stress tests)
 
 ### v4.3.2 (Feb 2026)
 

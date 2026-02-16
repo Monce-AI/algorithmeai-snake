@@ -5,7 +5,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-Proprietary-red.svg?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAxTDMgNXY2YzcgNCA4LjUgOC40IDkgMTIuOEM5LjUgMjAuNCA4IDE2IDggMTFWNmw0LTIuNUwxNiA2djVjMCA1LTEuNSA5LjQtNCAxa)](LICENSE)
-[![Version](https://img.shields.io/badge/v4.3.2-SAT_Bucketed-blueviolet.svg?logo=semanticrelease)](https://github.com/Monce-AI/algorithmeai-snake)
+[![Version](https://img.shields.io/badge/v4.3.3-SAT_Bucketed-blueviolet.svg?logo=semanticrelease)](https://github.com/Monce-AI/algorithmeai-snake)
 [![Build](https://img.shields.io/badge/Build-Passing-brightgreen.svg?logo=githubactions&logoColor=white)](#)
 
 [![Production](https://img.shields.io/badge/Production-Live_on_AWS-FF9900.svg?logo=amazonaws&logoColor=white)](https://snake.aws.monce.ai)
@@ -203,7 +203,22 @@ model.to_json("model.json")
 model = Snake("model.json")
 ```
 
-The JSON file contains: `version`, `population`, `header`, `targets`, `datatypes`, `config`, `layers`, `log`.
+**JSON structure (v4.3.3):**
+```json
+{
+  "version": "4.3.3",
+  "population": [...],
+  "header": ["target", "f1", ...],
+  "target": "target",
+  "targets": [...],
+  "datatypes": ["T", "N", ...],
+  "config": {"n_layers": 5, "bucket": 250, "noise": 0.25, "vocal": false},
+  "layers": [...],
+  "log": "..."
+}
+```
+
+Datatype codes: `B` = binary, `I` = integer, `N` = numeric, `T` = text, `J` = complex JSON (dict/list).
 
 Backwards compatible — v0.1 flat JSON files (with `clauses` + `lookalikes` at top level) are automatically wrapped into the bucketed format on load.
 
@@ -219,6 +234,31 @@ model.to_json("model_pruned.json")
 ```
 
 `val_data` is a list of dicts (same format as training data, must include the target field).
+
+## Data Type Detection
+
+Snake auto-detects types for each column at training time.
+
+**Target column** (checked in priority order):
+
+| Priority | Condition | Type Code | Storage |
+|----------|-----------|-----------|---------|
+| 1 | Any value is `dict` or `list` | `J` (Complex JSON) | Raw Python objects |
+| 2 | Values are exactly `{"0", "1"}` | `B` (Binary) | `int` |
+| 3 | Values are `{"True", "False"}` | `B` (Binary) | `int` |
+| 4 | All chars in `0-9` only | `I` (Integer) | `int` |
+| 5 | All chars in `+-.0123456789e` | `N` (Numeric) | `float` |
+| 6 | Otherwise | `T` (Text) | `str` |
+
+**Feature columns:** Numeric (`N`) vs Text (`T`) only — no Binary/Integer distinction.
+
+**Watch out:**
+- `"3", "4", "5"` → Integer (`I`), but `"3.0", "4.0"` → Numeric (`N`). Target type affects how predictions are compared.
+- `floatconversion` silently converts unparseable strings (`"N/A"`, `""`) to `0.0`.
+
+## Deduplication
+
+Both CSV and list\[dict\] flows deduplicate by hashing all **feature values** (not the target). If two rows have identical features but different targets, the second is dropped with a log message. This is intentional — conflicting training data degrades SAT clause quality.
 
 ## CLI
 
@@ -322,6 +362,128 @@ Repeated across `n_layers` independent layers. Final prediction aggregates all l
 
 Complexity: `O(n * log(n) * m * bucket²)` where n = samples, m = features.
 
+## Performance & Scaling
+
+**Complexity:**
+- **Training:** `O(n_layers * n_buckets * m * bucket_size²)` — dominated by SAT clause construction
+- **Inference:** `O(n_layers * n_clauses_in_matched_bucket)` — fast for small buckets
+- **Memory:** Entire population stored in memory; model JSON includes full training data
+
+**Scaling guidance:**
+
+| Dataset Size | Recommendation |
+|-------------|----------------|
+| < 500 samples | `bucket=250` works fine, single bucket per layer |
+| 500–5,000 | `bucket=250` creates 2–20 buckets per layer, good performance |
+| 5,000+ | Training gets slow — consider `n_layers=3-5`, `bucket=500` |
+| 10,000+ | Segment by a certain field, train per-segment models |
+
+**Inference latency** (from benchmarks):
+
+| Configuration | Latency |
+|--------------|---------|
+| 150 samples, 5 layers | ~0.2ms |
+| 1,797 samples, 50 layers | ~12ms |
+| 8,693 samples, 50 layers | ~7.4ms |
+
+## Common Patterns
+
+### Threshold-based routing
+
+```python
+model = Snake("model.json")
+prob = model.get_probability(X)
+confidence = max(prob.values())
+prediction = model.get_prediction(X)
+
+if confidence >= 0.51:
+    return prediction          # Snake is confident
+else:
+    return fuzzy_fallback(X)   # Fall back to another matcher
+```
+
+### Batch prediction
+
+```python
+model = Snake("model.json")
+results = []
+for row in batch:
+    features = {k: v for k, v in row.items() if k != "target"}
+    results.append({
+        "prediction": model.get_prediction(features),
+        "probability": model.get_probability(features),
+    })
+```
+
+### Audit for RAG / LLM consumption
+
+```python
+audit = model.get_audit(X)
+# Multi-line string with per-layer bucket routing,
+# vote breakdown, probabilities, and final prediction.
+# Feed to an LLM for explanation generation.
+```
+
+## Gotchas
+
+1. **Target type must match at prediction time.** If training targets were `int` (e.g., `0`, `1`), predictions return `int`. If `str` (e.g., `"cat"`), predictions return `str`. Mixing types silently fails to match.
+
+2. **Feature types are fixed at training time.** A feature detected as Numeric (`N`) does numeric comparison. Passing a string at prediction time for that feature causes a `TypeError`.
+
+3. **CSV must be pandas-formatted.** The CSV parser handles quoted fields with commas but expects `pandas.DataFrame.to_csv()` format. Non-pandas CSVs may parse incorrectly.
+
+4. **No incremental training.** To add data, rebuild from scratch. `make_validation` only prunes layers.
+
+5. **Model JSON contains the full training population.** A model trained on 5,000 rows produces a large JSON file. Be mindful of disk/memory.
+
+6. **`excluded_features_index` only works with CSV flow.** For list\[dict\] and DataFrame, filter your data before passing it in.
+
+7. **Binary True/False targets become int 0/1.** Compare predictions against `0`/`1` (int), not `"True"`/`"False"` (str).
+
+## Error Handling
+
+Snake has minimal error handling by design:
+
+| Situation | What Happens | How to Avoid |
+|-----------|-------------|-------------|
+| Empty list | `ValueError` | Check before constructing |
+| Empty DataFrame | `ValueError` | Check `len(df) > 0` |
+| Wrong file extension | Crashes | Use `.csv` or `.json` extensions |
+| File not found | `FileNotFoundError` | Check path exists |
+| Malformed JSON | `json.JSONDecodeError` | Validate JSON before loading |
+| `target_index` not found | `ValueError` / `IndexError` | Check column name/index exists |
+| Only 1 unique target | Trains but trivially predicts that class | Need at least 2 classes |
+| Prediction with `{}` | Uniform probability | Pass at least some features |
+| Unknown keys in prediction | Ignored silently | Use same key names as training |
+
+**No exceptions during prediction.** `get_prediction`, `get_probability`, `get_lookalikes`, `get_audit` all handle edge cases gracefully (worst case: uniform probability, empty lookalikes).
+
+## Stochastic Behavior
+
+Snake training is **non-deterministic**. The `oppose()` function uses `random.choice` extensively. Two runs on the same data produce different models with different clause sets. This is by design — the power comes from stochastic clause generation + deterministic selection.
+
+There is no `random.seed()` call in the Snake code. If you need reproducibility:
+
+```python
+import random
+random.seed(42)
+model = Snake(data, n_layers=5)
+```
+
+Test assertions are probabilistic (e.g., "at least 50% of training data has >50% confidence") rather than exact value checks.
+
+## Logging
+
+Snake uses Python's `logging` module. Each instance gets its own logger (`snake.<id>`).
+
+- **Buffer handler** — always attached at DEBUG level, captures everything to `self.log`. This is how `to_json()` persists the training log.
+- **Console handler** — attached only when `vocal`:
+  - `vocal=True`: INFO level (training progress)
+  - `vocal=2`: DEBUG level (per-target SAT progress)
+  - `vocal=False`: no console output
+
+The banner only prints when `vocal=True`.
+
 ## Optional: Cython Acceleration
 
 Snake includes optional Cython-accelerated hot paths for `apply_literal`, `apply_clause`, and `traverse_chain`. When compiled, these provide significant speedups for both training and inference.
@@ -333,6 +495,40 @@ python setup.py build_ext --inplace
 ```
 
 Without Cython, Snake runs in pure Python with identical behavior. The Cython extension is auto-detected at import time.
+
+## Testing
+
+```bash
+pytest                                # all 151 tests
+pytest tests/test_snake.py            # input modes, save/load, augmented, vocal, dedup
+pytest tests/test_buckets.py          # bucket chain, noise, routing, audit, dedup
+pytest tests/test_core_algorithm.py   # oppose, construct_clause, construct_sat
+pytest tests/test_validation.py       # make_validation / pruning
+pytest tests/test_edge_cases.py       # errors, type detection, extreme params
+pytest tests/test_cli.py              # CLI train/predict/info via subprocess
+pytest tests/test_logging.py          # logging buffer, JSON persistence, banner
+pytest tests/test_stress.py           # stress tests
+pytest tests/test_ultimate_stress.py  # extended stress tests
+```
+
+151 tests across 9 files. Tests use `tests/fixtures/sample.csv` (15 rows, 3 classes) with small `n_layers` (1–3) and `bucket` (3–5) for speed.
+
+## Changelog
+
+### v4.3.3 (Feb 2026)
+
+- **Cython infinite loop fix**: Fixed `oppose()` infinite loop in Cython hot paths
+- **`oppose()` canaries**: Added safety canaries to detect stuck loops
+- **151 tests**: Extended test suite from 92 to 151 tests across 9 files (added stress + ultimate stress tests)
+
+### v4.3.2 (Feb 2026)
+
+- **Logging migration**: Replaced `print()` + string accumulation with Python `logging`. Per-instance logger, buffer handler always captures, StreamHandler to stdout only when `vocal`
+- **Extensive test suite**: 92 tests across 7 files (was ~41). New: core algorithm, validation, edge cases, CLI, logging
+- **Cython training acceleration**: 4 new functions in `_accel.pyx` for `construct_clause`, `build_condition`, `_construct_local_sat`
+- **Bug fix — Binary True/False targets**: `floatconversion("True")` returned `0.0`, collapsing all True/False targets to 0. Fixed in both flows
+- **Spaceship Titanic benchmark**: 78.4% test accuracy (Kaggle top ~80–81%)
+- **`__main__.py`**: Enables `python -m algorithmeai` as CLI entry point
 
 ## License
 
