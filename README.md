@@ -1,16 +1,24 @@
 
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg?logo=python)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/Version-4.2.0-blue.svg)](#)
-[![Build](https://img.shields.io/badge/Build-Passing-brightgreen.svg)](#)
-[![Production](https://img.shields.io/badge/Production-Live-brightgreen.svg?logo=amazonaws)](https://snake.aws.monce.ai)
-[![API](https://img.shields.io/badge/API-snake.aws.monce.ai-blue.svg?logo=fastapi)](https://snake.aws.monce.ai/health)
-[![Algorithm](https://img.shields.io/badge/Algorithm-SAT--based-purple.svg)](#)
-[![Explainability](https://img.shields.io/badge/XAI-Fully_Explainable-orange.svg)](#)
-[![Complexity](https://img.shields.io/badge/Complexity-O(n·log(n)·m·b²)-lightgrey.svg)](#)
-[![Architecture](https://img.shields.io/badge/Matching-Snake_%2B_Fuzzy_%2B_LLM-red.svg)](#)
+[![GitHub](https://img.shields.io/github/stars/Monce-AI/algorithmeai-snake?style=social)](https://github.com/Monce-AI/algorithmeai-snake)
+[![GitHub last commit](https://img.shields.io/github/last-commit/Monce-AI/algorithmeai-snake?logo=github)](https://github.com/Monce-AI/algorithmeai-snake/commits/main)
+[![GitHub repo size](https://img.shields.io/github/repo-size/Monce-AI/algorithmeai-snake)](https://github.com/Monce-AI/algorithmeai-snake)
 
-**Author:** Charles Dana · [Algorithme.ai](https://algorithme.ai)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
+[![License](https://img.shields.io/badge/License-Proprietary-red.svg?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAxTDMgNXY2YzcgNCA4LjUgOC40IDkgMTIuOEM5LjUgMjAuNCA4IDE2IDggMTFWNmw0LTIuNUwxNiA2djVjMCA1LTEuNSA5LjQtNCAxa)](LICENSE)
+[![Version](https://img.shields.io/badge/v4.2.0-SAT_Bucketed-blueviolet.svg?logo=semanticrelease)](https://github.com/Monce-AI/algorithmeai-snake)
+[![Build](https://img.shields.io/badge/Build-Passing-brightgreen.svg?logo=githubactions&logoColor=white)](#)
+
+[![Production](https://img.shields.io/badge/Production-Live_on_AWS-FF9900.svg?logo=amazonaws&logoColor=white)](https://snake.aws.monce.ai)
+[![API](https://img.shields.io/badge/API-snake.aws.monce.ai-009688.svg?logo=fastapi&logoColor=white)](https://snake.aws.monce.ai/health)
+[![Accuracy](https://img.shields.io/badge/Train_Accuracy-99.33%25-brightgreen.svg?logo=target)](#)
+[![Throughput](https://img.shields.io/badge/Throughput-201_qps-blue.svg?logo=speedtest)](#)
+
+[![Algorithm](https://img.shields.io/badge/Algorithm-SAT--based_Lookalikes-7B2D8B.svg?logo=probot&logoColor=white)](#)
+[![XAI](https://img.shields.io/badge/XAI-Fully_Explainable-FF6F00.svg?logo=opensourceinitiative&logoColor=white)](#)
+[![Complexity](https://img.shields.io/badge/Complexity-O(n·log(n)·m·b²)-lightgrey.svg?logo=wolframmathematica)](#)
+[![Architecture](https://img.shields.io/badge/Cascade-Snake_→_Fuzzy_→_LLM-E91E63.svg?logo=stackblitz&logoColor=white)](#)
+
+**Author:** Charles Dana · [Monce SAS](https://monce.ai)
 
 # Algorithme AI - Snake 🐍
 **Author:** Charles Dana  
@@ -421,9 +429,9 @@ The saved model contains:
 
 ## 📝 License
 
-© Charles Dana, December 2025
+© 2025-2026 Charles Dana / Monce SAS. All rights reserved.
 
-This project is licensed under the MIT License.
+This software is **proprietary**. Source code is available for viewing and reference only. See [LICENSE](LICENSE) for details.
 
 
 
