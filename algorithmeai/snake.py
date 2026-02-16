@@ -1,11 +1,16 @@
 import json
+import logging
+import sys
 from random import choice, sample
 from time import time
 
 try:
     from ._accel import (apply_literal_fast, apply_clause_fast,
                          traverse_chain_fast, get_lookalikes_fast,
-                         batch_predict_fast)
+                         batch_predict_fast,
+                         filter_ts_remainder_fast, minimize_clause_fast,
+                         filter_indices_by_literal_fast,
+                         filter_consequence_fast)
     _HAS_ACCEL = True
 except ImportError:
     _HAS_ACCEL = False
@@ -14,9 +19,31 @@ except ImportError:
 #                                                              #
 #    Algorithme.ai : Snake         Author : Charles Dana       #
 #                                                              #
-#    v4.3.0 — SAT-ensembled bucketed multiclass classifier     #
+#    v4.3.2 — SAT-ensembled bucketed multiclass classifier     #
 #                                                              #
 ################################################################
+
+_BANNER = """################################################################
+#                                                              #
+#    Algorithme.ai : Snake         Author : Charles Dana       #
+#                                                              #
+#    v4.3.2 — SAT-ensembled bucketed multiclass classifier     #
+#                                                              #
+################################################################
+"""
+
+_snake_instance_counter = 0
+
+
+class _StringBufferHandler(logging.Handler):
+    """Logging handler that accumulates formatted records into an in-memory string buffer."""
+    def __init__(self):
+        super().__init__()
+        self.buffer = ""
+
+    def emit(self, record):
+        self.buffer += self.format(record) + "\n"
+
 
 """
 When working with strings of floating point, handles the mistakes by replacing the value to 0.0 when floating parse error
@@ -52,7 +79,7 @@ def _unique_vals(targets, indices):
     return result
 
 
-def build_condition(matching, population, targets, bucket, oppose_fn, apply_literal_fn, max_retries=50, log_fn=None):
+def build_condition(matching, population, targets, bucket, oppose_fn, apply_literal_fn, max_retries=50, log_fn=None, header=None):
     """AND of oppose literals that peels ~bucket elements from matching."""
     condition = []
     retries = 0
@@ -72,7 +99,10 @@ def build_condition(matching, population, targets, bucket, oppose_fn, apply_lite
         if literal is None:
             retries += 1
             continue
-        satisfying = [i for i in matching if apply_literal_fn(population[i], literal)]
+        if _HAS_ACCEL and header is not None:
+            satisfying = filter_indices_by_literal_fast(matching, population, literal, header)
+        else:
+            satisfying = [i for i in matching if apply_literal_fn(population[i], literal)]
         if len(satisfying) < bucket:
             retries += 1
             continue
@@ -89,7 +119,7 @@ def build_condition(matching, population, targets, bucket, oppose_fn, apply_lite
     return condition, matching
 
 
-def build_bucket_chain(population, targets, bucket, oppose_fn, apply_literal_fn, noise=0.25, log_fn=None):
+def build_bucket_chain(population, targets, bucket, oppose_fn, apply_literal_fn, noise=0.25, log_fn=None, header=None):
     """Sequential IF/ELIF/ELSE peeling into buckets."""
     chain = []
     remaining = list(range(len(population)))
@@ -104,7 +134,7 @@ def build_bucket_chain(population, targets, bucket, oppose_fn, apply_literal_fn,
             log_fn(f"#   [bucket_chain] --- BRANCH {branch_idx} --- {len(remaining)} remaining, {n_targets_remaining} unique targets")
         condition, selected = build_condition(
             remaining, population, targets, bucket,
-            oppose_fn, apply_literal_fn, log_fn=log_fn
+            oppose_fn, apply_literal_fn, log_fn=log_fn, header=header
         )
         if not condition:
             if log_fn:
@@ -151,16 +181,40 @@ Snake() of data will provide insights
 class Snake():
     def __init__(self, Knowledge, target_index=0, excluded_features_index=(),
                  n_layers=5, bucket=250, noise=0.25, vocal=False, saved=False):
-        self.log = """################################################################
-#                                                              #
-#    Algorithme.ai : Snake         Author : Charles Dana       #
-#                                                              #
-#    v4.3.0 — SAT-ensembled bucketed multiclass classifier     #
-#                                                              #
-################################################################
-"""
+        # --- logging setup ---
+        global _snake_instance_counter
+        _snake_instance_counter += 1
+        self._logger = logging.getLogger(f"snake.{_snake_instance_counter}")
+        self._logger.setLevel(logging.DEBUG)
+        self._logger.propagate = False
+        # Remove any leftover handlers (safety for reused logger names)
+        self._logger.handlers.clear()
+
+        # Buffer handler — always attached, captures everything to self.log
+        self._buffer_handler = _StringBufferHandler()
+        self._buffer_handler.setLevel(logging.DEBUG)
+        self._buffer_handler.setFormatter(logging.Formatter("%(message)s"))
+        self._logger.addHandler(self._buffer_handler)
+
+        # Console handler — only when vocal
+        self._console_handler = None
+        v = 1 if vocal is True else (vocal if vocal else 0)
+        if v >= 2:
+            self._console_handler = logging.StreamHandler(sys.stdout)
+            self._console_handler.setLevel(logging.DEBUG)
+            self._console_handler.setFormatter(logging.Formatter("%(message)s"))
+            self._logger.addHandler(self._console_handler)
+        elif v >= 1:
+            self._console_handler = logging.StreamHandler(sys.stdout)
+            self._console_handler.setLevel(logging.INFO)
+            self._console_handler.setFormatter(logging.Formatter("%(message)s"))
+            self._logger.addHandler(self._console_handler)
+
+        # Initialize buffer with banner
+        self._buffer_handler.buffer = _BANNER
         if vocal:
-            print(self.log)
+            print(_BANNER)
+
         self.population = []
         self.header = []
         self.target = None
@@ -276,7 +330,15 @@ class Snake():
                 val = reordered[i]
                 if dtt == "J":
                     item[h] = val
-                elif dtt in "NIB":
+                elif dtt == "B":
+                    sv = str(val)
+                    if sv in ("True", "TRUE", "true"):
+                        item[h] = 1
+                    elif sv in ("False", "FALSE", "false"):
+                        item[h] = 0
+                    else:
+                        item[h] = int(floatconversion(sv))
+                elif dtt in "NI":
                     item[h] = floatconversion(str(val)) if dtt == "N" else int(floatconversion(str(val)))
                 else:
                     item[h] = str(val)
@@ -460,10 +522,18 @@ class Snake():
     # Utility
     # ------------------------------------------------------------------
     def qprint(self, txt, level=1):
-        v = 1 if self.vocal is True else (self.vocal if self.vocal else 0)
-        if v >= level:
-            print(txt)
-        self.log += str(txt) + "\n"
+        if level >= 2:
+            self._logger.debug(str(txt))
+        else:
+            self._logger.info(str(txt))
+
+    @property
+    def log(self):
+        return self._buffer_handler.buffer
+
+    @log.setter
+    def log(self, value):
+        self._buffer_handler.buffer = value
 
     def __repr__(self):
         n = len(self.population) if isinstance(self.population, list) else 0
@@ -568,12 +638,20 @@ class Snake():
                     if dtt == "T":
                         item[h] = ""
                 else:
-                    if dtt in "IB":
-                        item[h] = int(row[mapping_table[h]])
-                    if dtt in "N":
-                        item[h] = floatconversion(row[mapping_table[h]])
-                    if dtt == "T":
-                        item[h] = str(row[mapping_table[h]])
+                    raw_val = row[mapping_table[h]]
+                    if dtt == "B":
+                        if raw_val in ("True", "TRUE", "true"):
+                            item[h] = 1
+                        elif raw_val in ("False", "FALSE", "false"):
+                            item[h] = 0
+                        else:
+                            item[h] = int(floatconversion(raw_val))
+                    elif dtt == "I":
+                        item[h] = int(raw_val)
+                    elif dtt == "N":
+                        item[h] = floatconversion(raw_val)
+                    elif dtt == "T":
+                        item[h] = str(raw_val)
                 if i > 0:
                     item_hash += str(item[h])
             if drop and item_hash in hashes:
@@ -726,22 +804,29 @@ class Snake():
     """
     def construct_clause(self, F, Ts):
         clause = [self.oppose(choice(Ts), F)]
-        Ts_remainder = [T for T in Ts if not self.apply_literal(T, clause[-1])]
-        while len(Ts_remainder):
-            clause += [self.oppose(choice(Ts_remainder), F)]
-            Ts_remainder = [T for T in Ts_remainder if not self.apply_literal(T, clause[-1])]
-        i = 0
-        while i < len(clause):
-            sub_clause = [clause[j] for j in range(len(clause)) if i != j]
-            minimal_test = False
-            for T in Ts:
-                if not self.apply_clause(T, sub_clause):
-                    minimal_test = True
-                    break
-            if minimal_test:
-                i += 1
-            else:
-                clause = sub_clause
+        if _HAS_ACCEL:
+            Ts_remainder = filter_ts_remainder_fast(Ts, clause[-1], self.header)
+            while len(Ts_remainder):
+                clause += [self.oppose(choice(Ts_remainder), F)]
+                Ts_remainder = filter_ts_remainder_fast(Ts_remainder, clause[-1], self.header)
+            clause = minimize_clause_fast(clause, Ts, self.header)
+        else:
+            Ts_remainder = [T for T in Ts if not self.apply_literal(T, clause[-1])]
+            while len(Ts_remainder):
+                clause += [self.oppose(choice(Ts_remainder), F)]
+                Ts_remainder = [T for T in Ts_remainder if not self.apply_literal(T, clause[-1])]
+            i = 0
+            while i < len(clause):
+                sub_clause = [clause[j] for j in range(len(clause)) if i != j]
+                minimal_test = False
+                for T in Ts:
+                    if not self.apply_clause(T, sub_clause):
+                        minimal_test = True
+                        break
+                if minimal_test:
+                    i += 1
+                else:
+                    clause = sub_clause
         return clause
 
     """
@@ -799,8 +884,11 @@ class Snake():
             while len(Fs):
                 F = choice(Fs)
                 clause = self.construct_clause(F, Ts)
-                consequence = [i for i in range(len(local_pop)) if local_targets[i] == target_value and not self.apply_clause(local_pop[i], clause)]
-                Fs = [F for F in Fs if self.apply_clause(F, clause)]
+                if _HAS_ACCEL:
+                    consequence, Fs = filter_consequence_fast(local_pop, local_targets, target_value, clause, self.header)
+                else:
+                    consequence = [i for i in range(len(local_pop)) if local_targets[i] == target_value and not self.apply_clause(local_pop[i], clause)]
+                    Fs = [F for F in Fs if self.apply_clause(F, clause)]
                 sat += [[clause, consequence]]
 
             lookalikes_for_target = {str(l): [] for l in range(len(local_pop)) if local_targets[l] == target_value}
@@ -840,7 +928,7 @@ class Snake():
         chain = build_bucket_chain(
             self.population, self.targets, self.bucket,
             self.oppose, self.apply_literal, self.noise,
-            log_fn=self.qprint
+            log_fn=self.qprint, header=self.header
         )
 
         self.qprint(f"#   [layer] Bucket chain ready: {len(chain)} buckets. Now constructing SAT per bucket...")
@@ -1118,7 +1206,7 @@ class Snake():
 
     def to_json(self, fout="snakeclassifier.json"):
         snake_classifier = {
-            "version": "4.3.0",
+            "version": "4.3.2",
             "population": self.population,
             "header": self.header,
             "target": self.target,
@@ -1179,7 +1267,7 @@ class Snake():
         }]]
 
     def _load_bucketed(self, loaded_module):
-        """Load v4.3.0 bucketed format."""
+        """Load v4.3.2 bucketed format."""
         self.layers = loaded_module["layers"]
         self.clauses = []
         self.lookalikes = {str(l): [] for l in range(len(self.population))}

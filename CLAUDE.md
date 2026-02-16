@@ -9,15 +9,21 @@ Author: Charles Dana / Monce SAS. Charles is the user you're talking to.
 
 ```
 algorithmeai/
-  __init__.py          # Exports: Snake, floatconversion, __version__ = "4.3.0"
-  snake.py             # The entire classifier (~1200 lines, zero dependencies)
-  _accel.pyx           # Optional Cython hot paths (apply_literal, apply_clause, traverse_chain)
+  __init__.py          # Exports: Snake, floatconversion, __version__ = "4.3.2"
+  snake.py             # The entire classifier (~1300 lines, zero dependencies)
+  _accel.pyx           # Optional Cython hot paths (inference + training acceleration)
   cli.py               # CLI: snake train / predict / info
+  __main__.py          # Enables `python -m algorithmeai` for CLI
 tests/
-  test_snake.py        # 5 input modes, save/load, backwards compat
+  test_snake.py        # 5 input modes, save/load, backwards compat, augmented, vocal, dedup
   test_buckets.py      # Bucket chain, noise, routing, audit, dedup
+  test_core_algorithm.py  # oppose, construct_clause, construct_sat
+  test_validation.py   # make_validation / pruning
+  test_edge_cases.py   # Errors, type detection, extreme params, prediction edges
+  test_cli.py          # CLI train/predict/info via subprocess
+  test_logging.py      # Logging migration validation
   fixtures/sample.csv  # 15-row toy dataset (color, size, shape -> label A/B/C)
-benchmarks.py          # Benchmark script (requires pandas + scikit-learn)
+benchmarks.py          # Benchmark script (sklearn + Spaceship Titanic)
 pyproject.toml         # Build config, hatchling, proprietary license
 README.md              # Public-facing docs
 LICENSE                # Proprietary
@@ -92,7 +98,7 @@ All take a dict `X` with feature keys (NOT the target key):
 | `get_prediction(X)` | The target value with highest probability | If no lookalikes found, returns random class (uniform distribution) |
 | `get_probability(X)` | `{class: float}` dict, sums to 1.0 | If 0 lookalikes: uniform `1/n_classes` for each class |
 | `get_lookalikes(X)` | `[[global_idx, target_value, condition], ...]` | Deduped by population index across layers |
-| `get_augmented(X)` | `{**X, "Lookalikes": ..., "Probability": ..., "Prediction": ..., "Audit": ...}` | Calls all 4 methods (4x the work) |
+| `get_augmented(X)` | `{**X, "Lookalikes": ..., "Probability": ..., "Prediction": ..., "Audit": ...}` | Single pass — calls get_lookalikes once, derives all else |
 | `get_audit(X)` | Multi-line string with per-layer bucket routing + vote breakdown | Human-readable, good for RAG/LLM consumption |
 
 **Critical behavior:** `get_prediction` does NOT raise on unknown keys. Missing keys in `X` cause `apply_literal` to return `False` for that literal — the sample just won't match those clauses. This is by design for partial-input robustness.
@@ -100,7 +106,7 @@ All take a dict `X` with feature keys (NOT the target key):
 ### Save & Load
 
 ```python
-# Save — always writes v4.3.0 bucketed format
+# Save — always writes v4.3.2 bucketed format
 model.to_json("model.json")       # or any path
 model.to_json()                    # defaults to "snakeclassifier.json"
 
@@ -110,10 +116,10 @@ model = Snake("model.json")       # skips training entirely
 
 **Backwards compatibility:** If the JSON has `clauses` + `lookalikes` at top level but no `layers` key, it's v0.1 flat format. `from_json` wraps it into a single ELSE bucket automatically. No migration needed.
 
-**JSON structure (v4.3.0):**
+**JSON structure (v4.3.2):**
 ```json
 {
-  "version": "4.3.0",
+  "version": "4.3.2",
   "population": [...],           // list of dicts (training data)
   "header": ["target", "f1", ...],
   "target": "target",            // target column name
@@ -161,9 +167,28 @@ Both CSV and list[dict] flows deduplicate by hashing all **feature values** (not
 
 The hash is a string concatenation of all feature values (not a proper hash function). It's fast but depends on string representation stability.
 
+## Logging (v4.3.2)
+
+Snake uses Python's `logging` module internally. Each `Snake` instance gets its own logger (`snake.<id>`).
+
+**Architecture:**
+- **Buffer handler** — always attached at DEBUG level, captures everything to `self.log`. This is how `to_json()` persists the training log.
+- **Console handler** — attached to `sys.stdout` only when `vocal`:
+  - `vocal=True` (or `vocal=1`): StreamHandler at INFO level
+  - `vocal >= 2`: StreamHandler at DEBUG level (shows per-target SAT progress)
+  - `vocal=False`: no console handler, silent training
+
+**The `qprint` method** is the only logging interface. All 82+ call sites use `self.qprint(msg)` or `self.qprint(msg, level=2)`:
+- `level=1` (default) → `logger.info()`
+- `level=2` → `logger.debug()`
+
+**The `log` property** reads/writes `self._buffer_handler.buffer`. The banner is always in the buffer (initialized in `__init__`). JSON serialization reads `self.log`, deserialization sets `self.log`.
+
+**The banner** prints directly via `print(_BANNER)` when `vocal=True`, preserving exact legacy behavior. It is NOT sent through the logger to avoid duplicate output.
+
 ## The Banner Print
 
-As of v4.3.0, the banner only prints when `vocal=True`. Previously it printed unconditionally.
+As of v4.3.2, the banner only prints when `vocal=True`. Previously it printed unconditionally.
 
 ## Error Handling
 
@@ -202,6 +227,7 @@ Snake has minimal error handling by design. Here's what can go wrong:
 **Inference latency (from benchmarks):**
 - 150 samples, 5 layers: ~0.2ms per prediction
 - 1797 samples, 50 layers: ~12ms per prediction
+- 8693 samples (Spaceship Titanic), 50 layers: ~7.4ms per prediction
 
 ## CLI
 
@@ -213,6 +239,8 @@ snake = "algorithmeai.cli:main"
 ```
 
 After `pip install -e .`, the `snake` command is available system-wide. Entry point: `algorithmeai/cli.py:main()`.
+
+Also runnable as `python -m algorithmeai` via `algorithmeai/__main__.py`.
 
 ### `snake train`
 
@@ -277,8 +305,6 @@ snake predict model.json -q '{"color": "red", "size": 10}' --audit
 
 **Note:** The `--query` value must be valid JSON parseable by `json.loads()`. Use single quotes around the JSON and double quotes inside (shell-safe). Feature values must match the types from training — pass numbers as numbers, strings as strings.
 
-**Note:** The banner header is always printed to stdout when loading the model. The prediction output comes after it.
-
 ### `snake info`
 
 Shows model metadata without loading the full model into Snake.
@@ -294,7 +320,7 @@ snake info model.json
 ```bash
 snake info model.json
 # Output:
-#   Snake model v4.3.0
+#   Snake model v4.3.2
 #   Target: species
 #   Population: 150
 #   Layers: 5
@@ -313,9 +339,14 @@ snake info model.json
 ## Testing
 
 ```bash
-pytest                    # runs all tests
-pytest tests/test_snake.py     # input modes + save/load
-pytest tests/test_buckets.py   # bucket chain + audit
+pytest                              # runs all 92 tests
+pytest tests/test_snake.py          # input modes, save/load, augmented, vocal, dedup
+pytest tests/test_buckets.py        # bucket chain, noise, routing, audit, dedup
+pytest tests/test_core_algorithm.py # oppose, construct_clause, construct_sat
+pytest tests/test_validation.py     # make_validation / pruning
+pytest tests/test_edge_cases.py     # errors, type detection, extreme params, prediction edges
+pytest tests/test_cli.py            # CLI train/predict/info via subprocess
+pytest tests/test_logging.py        # logging buffer, JSON persistence, banner
 ```
 
 Tests use `tests/fixtures/sample.csv` (15 rows, 3 classes). All tests use small `n_layers` (1-3) and `bucket` (3-5) for speed.
@@ -336,23 +367,41 @@ model = Snake(data, n_layers=5)
 
 ## Optional Cython Acceleration
 
-Snake v4.3.0 includes optional Cython-accelerated hot paths in `algorithmeai/_accel.pyx`:
+Snake v4.3.2 includes optional Cython-accelerated hot paths in `algorithmeai/_accel.pyx`:
+
+**Inference functions (v4.3.0):**
+- `apply_literal_fast` — single literal evaluation
+- `apply_clause_fast` — OR over literals
+- `traverse_chain_fast` — IF/ELIF/ELSE chain walk
+- `get_lookalikes_fast` — full inference pipeline
+- `batch_predict_fast` — batch inference
+
+**Training functions (v4.3.2):**
+- `filter_ts_remainder_fast` — filter Ts by literal (used in construct_clause)
+- `minimize_clause_fast` — full clause minimization loop in C
+- `filter_indices_by_literal_fast` — index-based population filtering (used in build_condition)
+- `filter_consequence_fast` — consequence + remaining Fs filtering (used in _construct_local_sat)
 
 ```python
 try:
-    from ._accel import apply_literal_fast, apply_clause_fast, traverse_chain_fast
+    from ._accel import (apply_literal_fast, apply_clause_fast,
+                         traverse_chain_fast, get_lookalikes_fast,
+                         batch_predict_fast,
+                         filter_ts_remainder_fast, minimize_clause_fast,
+                         filter_indices_by_literal_fast,
+                         filter_consequence_fast)
     _HAS_ACCEL = True
 except ImportError:
     _HAS_ACCEL = False
 ```
 
-When the compiled extension is available, `apply_literal`, `apply_clause`, and `get_lookalikes` delegate to the Cython versions. Install with:
+Install with:
 
 ```bash
 pip install -e ".[fast]" && python setup.py build_ext --inplace
 ```
 
-Without Cython, pure Python runs identically. The `_HAS_ACCEL` flag is checked at function call time.
+Without Cython, pure Python runs identically. The `_HAS_ACCEL` flag gates all fast paths — training and inference methods check it before dispatching.
 
 ## Common Patterns
 
@@ -407,9 +456,9 @@ audit = model.get_audit(X)
 
 ## Things That Will Bite You
 
-1. **The banner prints to stdout with `vocal=True` only.** As of v4.3.0, set `vocal=False` to suppress the banner.
+1. **The banner prints to stdout with `vocal=True` only.** Set `vocal=False` to suppress.
 
-2. **`get_augmented` is now efficient.** As of v4.3.0, it calls `get_lookalikes` once and derives probability, prediction, and audit from that single pass. No longer 4x overhead.
+2. **`get_augmented` is efficient.** It calls `get_lookalikes` once and derives probability, prediction, and audit from that single pass. No longer 4x overhead.
 
 3. **Target type must match at prediction time.** If training targets were `int` (e.g., `0`, `1`), your prediction comparison is against `int`. If they were `str` (e.g., `"cat"`, `"dog"`), comparison is against `str`. Mixing types silently fails to match.
 
@@ -422,3 +471,16 @@ audit = model.get_audit(X)
 7. **Model JSON contains the full training population.** A model trained on 5000 rows with 20 features produces a large JSON file. Be mindful of disk/memory.
 
 8. **`exclude_features_index` only works with CSV flow.** The list[dict] and DataFrame flows don't support it — filter your data before passing it in.
+
+9. **Binary True/False targets are stored as int 0/1.** As of v4.3.2, `"True"`/`"False"` strings are correctly converted in both CSV and list[dict] flows. Compare predictions against `0`/`1` (int), not `"True"`/`"False"` (str).
+
+## Changelog
+
+### v4.3.2 (Feb 2026)
+
+- **Logging migration**: Replaced `print()` + string accumulation with Python `logging`. Per-instance logger, buffer handler always captures, StreamHandler to stdout only when `vocal`. All 82 `qprint` call sites unchanged.
+- **Extensive test suite**: 92 tests across 7 files (was ~41). New: core algorithm, validation, edge cases, CLI, logging.
+- **Cython training acceleration**: 4 new functions in `_accel.pyx` for `construct_clause`, `build_condition`, `_construct_local_sat`. Expected 3-5x training speedup when compiled.
+- **Bug fix — Binary True/False targets**: `floatconversion("True")` returned `0.0`, collapsing all True/False targets to 0. Fixed in both `_init_from_data` and `make_population`.
+- **Spaceship Titanic benchmark**: 78.4% test accuracy (Kaggle top ~80-81%), added to benchmarks.py and README.
+- **`__main__.py`**: Enables `python -m algorithmeai` as CLI entry point.

@@ -5,7 +5,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-Proprietary-red.svg?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAxTDMgNXY2YzcgNCA4LjUgOC40IDkgMTIuOEM5LjUgMjAuNCA4IDE2IDggMTFWNmw0LTIuNUwxNiA2djVjMCA1LTEuNSA5LjQtNCAxa)](LICENSE)
-[![Version](https://img.shields.io/badge/v4.3.0-SAT_Bucketed-blueviolet.svg?logo=semanticrelease)](https://github.com/Monce-AI/algorithmeai-snake)
+[![Version](https://img.shields.io/badge/v4.3.2-SAT_Bucketed-blueviolet.svg?logo=semanticrelease)](https://github.com/Monce-AI/algorithmeai-snake)
 [![Build](https://img.shields.io/badge/Build-Passing-brightgreen.svg?logo=githubactions&logoColor=white)](#)
 
 [![Production](https://img.shields.io/badge/Production-Live_on_AWS-FF9900.svg?logo=amazonaws&logoColor=white)](https://snake.aws.monce.ai)
@@ -236,7 +236,7 @@ snake info model.json
 
 ## Benchmarks
 
-Accuracy on classic sklearn datasets. 80/20 train/test split (seed=42), `bucket=250`, `noise=0.25`. Run `python benchmarks.py` to reproduce.
+Accuracy on classic sklearn datasets + Kaggle Spaceship Titanic. 80/20 train/test split (seed=42), `bucket=250`, `noise=0.25`. Run `python benchmarks.py` to reproduce.
 
 **`n_layers=5`**
 
@@ -246,6 +246,7 @@ Accuracy on classic sklearn datasets. 80/20 train/test split (seed=42), `bucket=
 | Wine | Multi | 178 | 13 | 3 | 100.0% | 97.2% | 0.0s | 0.2ms |
 | Breast Cancer | Binary | 569 | 30 | 2 | 100.0% | 96.5% | 0.1s | 0.6ms |
 | Digits | Multi | 1797 | 64 | 10 | 100.0% | 90.6% | 1.9s | 1.2ms |
+| Spaceship Titanic | Binary | 8693 | 12 | 2 | 94.4% | 76.7% | 4.9s | 1.1ms |
 
 **`n_layers=15`**
 
@@ -255,6 +256,7 @@ Accuracy on classic sklearn datasets. 80/20 train/test split (seed=42), `bucket=
 | Wine | Multi | 178 | 13 | 3 | 100.0% | 97.2% | 0.0s | 0.7ms |
 | Breast Cancer | Binary | 569 | 30 | 2 | 100.0% | 95.6% | 0.3s | 1.9ms |
 | Digits | Multi | 1797 | 64 | 10 | 100.0% | 95.3% | 5.6s | 3.6ms |
+| Spaceship Titanic | Binary | 8693 | 12 | 2 | 95.0% | 77.6% | 15.0s | 2.5ms |
 
 **`n_layers=50`**
 
@@ -264,6 +266,9 @@ Accuracy on classic sklearn datasets. 80/20 train/test split (seed=42), `bucket=
 | Wine | Multi | 178 | 13 | 3 | 100.0% | 100.0% | 0.1s | 2.3ms |
 | Breast Cancer | Binary | 569 | 30 | 2 | 100.0% | 97.4% | 0.9s | 6.3ms |
 | Digits | Multi | 1797 | 64 | 10 | 100.0% | 96.1% | 19.1s | 11.8ms |
+| Spaceship Titanic | Binary | 8693 | 12 | 2 | 94.8% | 78.4% | 51.1s | 7.4ms |
+
+**Spaceship Titanic** ([Kaggle competition](https://www.kaggle.com/competitions/spaceship-titanic)): 8,693 passengers, binary classification (transported or not). Features: HomePlanet, CryoSleep, Destination, VIP, CabinDeck, CabinSide + 6 numeric spending columns. Minimal preprocessing — no feature engineering beyond cabin splitting. Kaggle leaderboard top scores are ~80-81%.
 
 More layers improve test accuracy at the cost of training time and inference latency. Benchmark script requires `pandas` and `scikit-learn` for data loading/splitting only — Snake itself has zero dependencies.
 

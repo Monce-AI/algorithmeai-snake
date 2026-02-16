@@ -11,7 +11,7 @@ SAMPLE_CSV = os.path.join(FIXTURES, "sample.csv")
 
 
 def test_version():
-    assert __version__ == "4.3.0"
+    assert __version__ == "4.3.2"
 
 
 def test_floatconversion():
@@ -216,6 +216,90 @@ class TestComplexJsonTargets:
         assert s.datatypes[0] == "J"
         pred = s.get_prediction({"f": "a"})
         assert isinstance(pred, list)
+
+
+# ---- Backwards compat: flat JSON ----
+
+# ---- get_augmented ----
+
+class TestGetAugmented:
+    def test_has_all_keys(self):
+        s = Snake(SAMPLE_CSV, target_index=3, n_layers=2, bucket=5, vocal=False)
+        X = {"color": "red", "size": 10.0, "shape": "circle"}
+        Y = s.get_augmented(X)
+        assert "Lookalikes" in Y
+        assert "Probability" in Y
+        assert "Prediction" in Y
+        assert "Audit" in Y
+        assert Y["Prediction"] in ["A", "B", "C"]
+
+    def test_does_not_mutate_input(self):
+        s = Snake(SAMPLE_CSV, target_index=3, n_layers=2, bucket=5, vocal=False)
+        X = {"color": "red", "size": 10.0, "shape": "circle"}
+        X_copy = dict(X)
+        s.get_augmented(X)
+        assert X == X_copy
+
+    def test_probability_sums_to_one(self):
+        s = Snake(SAMPLE_CSV, target_index=3, n_layers=2, bucket=5, vocal=False)
+        X = {"color": "blue", "size": 20.0, "shape": "square"}
+        Y = s.get_augmented(X)
+        assert abs(sum(Y["Probability"].values()) - 1.0) < 1e-9
+
+
+# ---- Excluded features (CSV only) ----
+
+class TestExcludedFeatures:
+    def test_csv_excluded_column(self):
+        """Excluding column 2 (shape) should reduce feature count."""
+        s_all = Snake(SAMPLE_CSV, target_index=3, n_layers=1, bucket=5, vocal=False)
+        s_excl = Snake(SAMPLE_CSV, target_index=3, excluded_features_index=(2,), n_layers=1, bucket=5, vocal=False)
+        assert len(s_excl.header) == len(s_all.header) - 1
+        assert "shape" not in s_excl.header
+
+
+# ---- Deduplication ----
+
+class TestDeduplication:
+    def test_duplicate_features_different_targets_drops(self):
+        """Duplicate features with different targets should drop the second row."""
+        data = [
+            {"label": "A", "x": "same"},
+            {"label": "B", "x": "same"},
+            {"label": "C", "x": "different"},
+        ]
+        s = Snake(data, n_layers=1, bucket=3, vocal=False)
+        # "same" feature appears twice with different targets -> one dropped
+        assert len(s.population) == 2
+
+
+# ---- CSV parsing ----
+
+class TestMakeBlocFromLine:
+    def test_simple_line(self):
+        s = Snake(SAMPLE_CSV, target_index=3, n_layers=1, bucket=5, vocal=False)
+        result = s.make_bloc_from_line("a,b,c\n")
+        assert result == ["a", "b", "c"]
+
+    def test_quoted_line(self):
+        s = Snake(SAMPLE_CSV, target_index=3, n_layers=1, bucket=5, vocal=False)
+        result = s.make_bloc_from_line('"hello, world",b,c\n')
+        assert result == ["hello, world", "b", "c"]
+
+
+# ---- Vocal modes ----
+
+class TestVocalModes:
+    def test_vocal_false_no_stdout(self, capsys):
+        Snake(SAMPLE_CSV, target_index=3, n_layers=1, bucket=5, vocal=False)
+        captured = capsys.readouterr()
+        assert captured.out == ""
+
+    def test_vocal_true_has_stdout(self, capsys):
+        Snake(SAMPLE_CSV, target_index=3, n_layers=1, bucket=5, vocal=True)
+        captured = capsys.readouterr()
+        assert len(captured.out) > 0
+        assert "v4.3.2" in captured.out
 
 
 # ---- Backwards compat: flat JSON ----

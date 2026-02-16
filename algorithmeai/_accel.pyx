@@ -116,6 +116,84 @@ def get_lookalikes_fast(list layers, dict X, list header, list targets):
     return all_lookalikes
 
 
+# ---------------------------------------------------------------------------
+# Training acceleration functions
+# ---------------------------------------------------------------------------
+
+
+def filter_ts_remainder_fast(list Ts, list literal, list header):
+    """Filter Ts to keep only those where apply_literal is False (remainder).
+    Used in construct_clause to find Ts not yet covered by the last literal."""
+    cdef list result = []
+    cdef dict T
+    for T in Ts:
+        if not apply_literal_fast(T, literal, header):
+            result.append(T)
+    return result
+
+
+def minimize_clause_fast(list clause, list Ts, list header):
+    """Minimize a clause by removing redundant literals.
+    A literal is redundant if removing it still leaves the clause True on all Ts."""
+    cdef int i = 0
+    cdef int j, n
+    cdef list sub_clause
+    cdef dict T
+    cdef bint some_fail
+    while i < len(clause):
+        n = len(clause)
+        sub_clause = [clause[j] for j in range(n) if j != i]
+        some_fail = False
+        for T in Ts:
+            if not apply_clause_fast(T, sub_clause, header):
+                some_fail = True
+                break
+        if some_fail:
+            i += 1
+        else:
+            clause = sub_clause
+    return clause
+
+
+def filter_indices_by_literal_fast(list indices, list population, list literal, list header):
+    """Filter population indices where apply_literal is True.
+    Used in build_condition to filter matching indices by a literal."""
+    cdef list result = []
+    cdef int idx
+    for idx in indices:
+        if apply_literal_fast(population[idx], literal, header):
+            result.append(idx)
+    return result
+
+
+def check_clause_covers_all_fast(list Ts, list clause, list header):
+    """Check that a clause (OR of literals) is True on all samples in Ts."""
+    cdef dict T
+    for T in Ts:
+        if not apply_clause_fast(T, clause, header):
+            return False
+    return True
+
+
+def filter_consequence_fast(list local_pop, list local_targets, object target_value, list clause, list header):
+    """Compute consequence indices and remaining Fs for a clause and target value.
+    Returns (consequence_indices, remaining_Fs) where:
+    - consequence_indices: indices where target matches AND clause is False (NOT eliminated)
+    - remaining_Fs: list of Fs where clause is True (eliminated, need further clauses)
+    """
+    cdef list consequence = []
+    cdef list remaining_fs = []
+    cdef int i
+    cdef int n = len(local_pop)
+    for i in range(n):
+        if local_targets[i] == target_value:
+            if not apply_clause_fast(local_pop[i], clause, header):
+                consequence.append(i)
+            else:
+                remaining_fs.append(local_pop[i])
+    return consequence, remaining_fs
+
+
 def batch_predict_fast(list layers, list Xs, list header, list targets, list unique_targets):
     """Cython-accelerated batch prediction. Returns list of (prediction, confidence, prob_dict)."""
     cdef list results = []
