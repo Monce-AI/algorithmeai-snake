@@ -19,7 +19,7 @@ except ImportError:
 #                                                              #
 #    Algorithme.ai : Snake         Author : Charles Dana       #
 #                                                              #
-#    v4.3.2 — SAT-ensembled bucketed multiclass classifier     #
+#    v4.3.3 — SAT-ensembled bucketed multiclass classifier     #
 #                                                              #
 ################################################################
 
@@ -27,7 +27,7 @@ _BANNER = """################################################################
 #                                                              #
 #    Algorithme.ai : Snake         Author : Charles Dana       #
 #                                                              #
-#    v4.3.2 — SAT-ensembled bucketed multiclass classifier     #
+#    v4.3.3 — SAT-ensembled bucketed multiclass classifier     #
 #                                                              #
 ################################################################
 """
@@ -673,9 +673,10 @@ class Snake():
     - For numeric fields: splits to be greater or not to be greater
     """
     def oppose(self, T, F):
-        candidates = [i for i in range(1, len(self.header)) if T[self.header[i]] != F[self.header[i]]]
+        candidates = [i for i in range(1, len(self.header)) if T[self.header[i]] != F[self.header[i]]
+                       and not (self.datatypes[i] == "N" and (T[self.header[i]] != T[self.header[i]] or F[self.header[i]] != F[self.header[i]]))]
         if not candidates:
-            return None
+            exit("Snake.oppose() — T and F are identical on all features. Dedup failed somewhere upstream. You should never see this. I'm out.")
         index = choice(candidates)
         h = self.header[index]
         if self.datatypes[index] == "T":
@@ -736,8 +737,10 @@ class Snake():
                 if T[h] != F[h] and not F[h] in T[h]:
                     return [index, F[h], True, "T"]
         if self.datatypes[index] == "N":
+            if F[h] != F[h] or T[h] != T[h]:  # NaN guard: NaN != NaN is True
+                exit("Snake.oppose() — NaN slipped past floatconversion into a numeric feature. Impressive failure. I'm out.")
             return [index, (F[h] + T[h]) / 2, T[h] > F[h], "N"]
-        return None
+        exit("Snake.oppose() — feature datatype is neither 'N' nor 'T'. Someone broke the type detector. I'm out.")
 
     """
     Will return:
@@ -803,18 +806,40 @@ class Snake():
     - Minimal
     """
     def construct_clause(self, F, Ts):
-        clause = [self.oppose(choice(Ts), F)]
+        lit = self.oppose(choice(Ts), F)
+        if lit is None:
+            return []
+        clause = [lit]
+        max_iters = len(Ts) * 2
         if _HAS_ACCEL:
             Ts_remainder = filter_ts_remainder_fast(Ts, clause[-1], self.header)
+            iters = 0
             while len(Ts_remainder):
-                clause += [self.oppose(choice(Ts_remainder), F)]
+                lit = self.oppose(choice(Ts_remainder), F)
+                if lit is None:
+                    break
+                clause.append(lit)
+                prev_len = len(Ts_remainder)
                 Ts_remainder = filter_ts_remainder_fast(Ts_remainder, clause[-1], self.header)
+                iters += 1
+                if len(Ts_remainder) >= prev_len or iters > max_iters:
+                    self.qprint(f"# WARNING: construct_clause no progress — {len(Ts_remainder)} Ts stuck, breaking", level=2)
+                    break
             clause = minimize_clause_fast(clause, Ts, self.header)
         else:
             Ts_remainder = [T for T in Ts if not self.apply_literal(T, clause[-1])]
+            iters = 0
             while len(Ts_remainder):
-                clause += [self.oppose(choice(Ts_remainder), F)]
+                lit = self.oppose(choice(Ts_remainder), F)
+                if lit is None:
+                    break
+                clause.append(lit)
+                prev_len = len(Ts_remainder)
                 Ts_remainder = [T for T in Ts_remainder if not self.apply_literal(T, clause[-1])]
+                iters += 1
+                if len(Ts_remainder) >= prev_len or iters > max_iters:
+                    self.qprint(f"# WARNING: construct_clause no progress — {len(Ts_remainder)} Ts stuck, breaking", level=2)
+                    break
             i = 0
             while i < len(clause):
                 sub_clause = [clause[j] for j in range(len(clause)) if i != j]
@@ -839,6 +864,10 @@ class Snake():
         while len(Fs):
             F = choice(Fs)
             clause = self.construct_clause(F, Ts)
+            if not clause:
+                Fs = [f for f in Fs if f is not F]
+                self.qprint(f"# WARNING: empty clause in construct_sat for target [{target_value}], {len(Fs)} Fs remaining", level=2)
+                continue
             consequence = [i for i in range(len(self.population)) if self.targets[i] == target_value and not self.apply_clause(self.population[i], clause)]
             Fs = [F for F in Fs if self.apply_clause(F, clause)]
             sat += [[clause, consequence]]
@@ -884,11 +913,16 @@ class Snake():
             while len(Fs):
                 F = choice(Fs)
                 clause = self.construct_clause(F, Ts)
+                if not clause:
+                    # F indistinguishable from Ts — remove it to avoid infinite loop
+                    Fs = [f for f in Fs if f is not F]
+                    self.qprint(f"# WARNING: empty clause for target [{target_value}], {len(Fs)} Fs remaining", level=2)
+                    continue
                 if _HAS_ACCEL:
-                    consequence, Fs = filter_consequence_fast(local_pop, local_targets, target_value, clause, self.header)
+                    consequence, _ = filter_consequence_fast(local_pop, local_targets, target_value, clause, self.header)
                 else:
                     consequence = [i for i in range(len(local_pop)) if local_targets[i] == target_value and not self.apply_clause(local_pop[i], clause)]
-                    Fs = [F for F in Fs if self.apply_clause(F, clause)]
+                Fs = [f for f in Fs if self.apply_clause(f, clause)]
                 sat += [[clause, consequence]]
 
             lookalikes_for_target = {str(l): [] for l in range(len(local_pop)) if local_targets[l] == target_value}
@@ -1206,7 +1240,7 @@ class Snake():
 
     def to_json(self, fout="snakeclassifier.json"):
         snake_classifier = {
-            "version": "4.3.2",
+            "version": "4.3.3",
             "population": self.population,
             "header": self.header,
             "target": self.target,
@@ -1267,7 +1301,7 @@ class Snake():
         }]]
 
     def _load_bucketed(self, loaded_module):
-        """Load v4.3.2 bucketed format."""
+        """Load v4.3.3 bucketed format."""
         self.layers = loaded_module["layers"]
         self.clauses = []
         self.lookalikes = {str(l): [] for l in range(len(self.population))}

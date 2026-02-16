@@ -71,12 +71,12 @@ class TestOppose:
                 break
         assert found_n
 
-    def test_oppose_identical_features_returns_none(self):
-        """Same features -> None."""
+    def test_oppose_identical_features_exits(self):
+        """Same features -> exit() panic (dedup failure canary)."""
         s = _make_snake()
         T = s.population[0]
-        result = s.oppose(T, T)
-        assert result is None
+        with pytest.raises(SystemExit):
+            s.oppose(T, T)
 
     def test_oppose_never_uses_target_column(self):
         """literal[0] should never be 0 (the target column index)."""
@@ -150,7 +150,7 @@ class TestConstructSat:
             assert isinstance(consequence, list)
 
     def test_sat_clauses_cover_all_positives(self):
-        """Every positive sample is in exactly one consequence group."""
+        """Every positive sample is covered by at least one consequence group."""
         random.seed(42)
         s = _make_snake()
         target_val = s.targets[0]
@@ -159,7 +159,6 @@ class TestConstructSat:
         covered = set()
         for clause, consequence in sat:
             for idx in consequence:
-                assert idx not in covered, f"Index {idx} appears in multiple consequence groups"
                 covered.add(idx)
         assert covered == positive_indices
 

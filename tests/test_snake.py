@@ -11,7 +11,7 @@ SAMPLE_CSV = os.path.join(FIXTURES, "sample.csv")
 
 
 def test_version():
-    assert __version__ == "4.3.2"
+    assert __version__ == "4.3.3"
 
 
 def test_floatconversion():
@@ -299,7 +299,7 @@ class TestVocalModes:
         Snake(SAMPLE_CSV, target_index=3, n_layers=1, bucket=5, vocal=True)
         captured = capsys.readouterr()
         assert len(captured.out) > 0
-        assert "v4.3.2" in captured.out
+        assert "v4.3.3" in captured.out
 
 
 # ---- Backwards compat: flat JSON ----
