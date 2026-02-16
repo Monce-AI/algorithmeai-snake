@@ -1,0 +1,16 @@
+color,size,shape,label
+red,10,circle,A
+red,12,circle,A
+red,11,circle,A
+blue,20,square,B
+blue,22,square,B
+blue,21,square,B
+green,30,triangle,C
+green,32,triangle,C
+green,31,triangle,C
+red,15,oval,A
+blue,25,rectangle,B
+green,35,hexagon,C
+red,9,circle,A
+blue,19,square,B
+green,29,triangle,C

@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "algorithmeai"
+version = "4.2.0"
+description = "Snake - SAT-ensembled bucketed multiclass classifier"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [
+    { name = "Algorithme.ai" },
+    { name = "Charles Dana" }
+]
+dependencies = []
+
+[project.scripts]
+snake = "algorithmeai.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/AlgorithmeAi/Snake"
+Repository = "https://github.com/AlgorithmeAi/Snake"
+Documentation = "https://github.com/AlgorithmeAi/Snake#readme"
+
+[tool.hatch.build.targets.wheel]
+packages = ["algorithmeai"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+pythonpath = ["."]
