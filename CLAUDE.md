@@ -9,20 +9,21 @@ Author: Charles Dana / Monce SAS. Charles is the user you're talking to.
 
 ```
 algorithmeai/
-  __init__.py          # Exports: Snake, floatconversion, __version__ = "4.3.3"
-  snake.py             # The entire classifier (~1300 lines, zero dependencies)
+  __init__.py          # Exports: Snake, floatconversion, __version__ = "4.4.2"
+  snake.py             # The entire classifier (~1500 lines, zero dependencies)
   _accel.pyx           # Optional Cython hot paths (inference + training acceleration)
   cli.py               # CLI: snake train / predict / info
   __main__.py          # Enables `python -m algorithmeai` for CLI
 tests/
-  test_snake.py        # 5 input modes, save/load, backwards compat, augmented, vocal, dedup
+  test_snake.py        # 5 input modes, save/load, backwards compat, augmented, vocal, dedup, parallel training
   test_buckets.py      # Bucket chain, noise, routing, audit, dedup
   test_core_algorithm.py  # oppose, construct_clause, construct_sat
   test_validation.py   # make_validation / pruning
   test_edge_cases.py   # Errors, type detection, extreme params, prediction edges
   test_cli.py          # CLI train/predict/info via subprocess
   test_logging.py      # Logging migration validation
-  test_stress.py       # Stress tests
+  test_audit.py        # Routing AND, Lookalike AND, plain text assertions, audit end-to-end
+  test_stress.py       # Stress tests, batch equivalence
   test_ultimate_stress.py  # Extended stress tests
   fixtures/sample.csv  # 15-row toy dataset (color, size, shape -> label A/B/C)
 benchmarks.py          # Benchmark script (sklearn + Spaceship Titanic)
@@ -55,7 +56,7 @@ Snake's constructor accepts ONE positional argument `Knowledge` and dispatches b
 ### Constructor Signature
 
 ```python
-Snake(Knowledge, target_index=0, excluded_features_index=(), n_layers=5, bucket=250, noise=0.25, vocal=False, saved=False)
+Snake(Knowledge, target_index=0, excluded_features_index=(), n_layers=5, bucket=250, noise=0.25, vocal=False, saved=False, progress_file=None, workers=1)
 ```
 
 **Defaults that matter:**
@@ -64,6 +65,8 @@ Snake(Knowledge, target_index=0, excluded_features_index=(), n_layers=5, bucket=
 - `noise=0.25` — 25% cross-bucket noise for regularization. Set to 0 for strict partitioning.
 - `vocal=False` — set to `True` to see training progress and the banner header.
 - `saved=False` — only used in CSV flow. If `True`, auto-saves to `snakeclassifier.json` after training.
+- `progress_file=None` — if set to a file path, writes JSON progress updates during training (layer/ETA info). Useful for UI progress bars.
+- `workers=1` — number of parallel workers for layer construction. `workers > 1` uses `multiprocessing.Pool` for parallel training. Each worker builds one layer with a unique RNG seed.
 
 ### Production Pattern (list[dict])
 
@@ -101,14 +104,14 @@ All take a dict `X` with feature keys (NOT the target key):
 | `get_probability(X)` | `{class: float}` dict, sums to 1.0 | If 0 lookalikes: uniform `1/n_classes` for each class |
 | `get_lookalikes(X)` | `[[global_idx, target_value, condition], ...]` | Deduped by population index across layers |
 | `get_augmented(X)` | `{**X, "Lookalikes": ..., "Probability": ..., "Prediction": ..., "Audit": ...}` | Single pass — calls get_lookalikes once, derives all else |
-| `get_audit(X)` | Multi-line string with per-layer bucket routing + vote breakdown | Human-readable, good for RAG/LLM consumption |
+| `get_audit(X)` | Multi-line string with Routing AND + Lookalike AND per layer | Human-readable, good for RAG/LLM consumption |
 
 **Critical behavior:** `get_prediction` does NOT raise on unknown keys. Missing keys in `X` cause `apply_literal` to return `False` for that literal — the sample just won't match those clauses. This is by design for partial-input robustness.
 
 ### Save & Load
 
 ```python
-# Save — always writes v4.3.3 bucketed format
+# Save — always writes v4.4.2 bucketed format
 model.to_json("model.json")       # or any path
 model.to_json()                    # defaults to "snakeclassifier.json"
 
@@ -118,16 +121,16 @@ model = Snake("model.json")       # skips training entirely
 
 **Backwards compatibility:** If the JSON has `clauses` + `lookalikes` at top level but no `layers` key, it's v0.1 flat format. `from_json` wraps it into a single ELSE bucket automatically. No migration needed.
 
-**JSON structure (v4.3.3):**
+**JSON structure (v4.4.2):**
 ```json
 {
-  "version": "4.3.3",
+  "version": "4.4.2",
   "population": [...],           // list of dicts (training data)
   "header": ["target", "f1", ...],
   "target": "target",            // target column name
   "targets": [...],              // target values array (parallel to population)
   "datatypes": ["T", "N", ...],  // B=binary, I=integer, N=numeric, T=text, J=complex JSON (dict/list)
-  "config": {"n_layers": 5, "bucket": 250, "noise": 0.25, "vocal": false},
+  "config": {"n_layers": 5, "bucket": 250, "noise": 0.25, "vocal": false, "workers": 1},
   "layers": [...],               // bucketed layer data
   "log": "..."                   // training log string
 }
@@ -169,7 +172,7 @@ Both CSV and list[dict] flows deduplicate by hashing all **feature values** (not
 
 The hash is a string concatenation of all feature values (not a proper hash function). It's fast but depends on string representation stability.
 
-## Logging (v4.3.3)
+## Logging
 
 Snake uses Python's `logging` module internally. Each `Snake` instance gets its own logger (`snake.<id>`).
 
@@ -190,7 +193,7 @@ Snake uses Python's `logging` module internally. Each `Snake` instance gets its 
 
 ## The Banner Print
 
-As of v4.3.3, the banner only prints when `vocal=True`. Previously it printed unconditionally.
+As of v4.3.3+, the banner only prints when `vocal=True`. Previously it printed unconditionally.
 
 ## Error Handling
 
@@ -322,7 +325,7 @@ snake info model.json
 ```bash
 snake info model.json
 # Output:
-#   Snake model v4.3.3
+#   Snake model v4.4.2
 #   Target: species
 #   Population: 150
 #   Layers: 5
@@ -341,19 +344,20 @@ snake info model.json
 ## Testing
 
 ```bash
-pytest                                # runs all 151 tests
-pytest tests/test_snake.py            # input modes, save/load, augmented, vocal, dedup
+pytest                                # runs all 174 tests
+pytest tests/test_snake.py            # input modes, save/load, augmented, vocal, dedup, parallel training
 pytest tests/test_buckets.py          # bucket chain, noise, routing, audit, dedup
 pytest tests/test_core_algorithm.py   # oppose, construct_clause, construct_sat
 pytest tests/test_validation.py       # make_validation / pruning
 pytest tests/test_edge_cases.py       # errors, type detection, extreme params, prediction edges
 pytest tests/test_cli.py              # CLI train/predict/info via subprocess
 pytest tests/test_logging.py          # logging buffer, JSON persistence, banner
-pytest tests/test_stress.py           # stress tests
+pytest tests/test_audit.py            # Routing AND, Lookalike AND, plain text assertions, audit end-to-end
+pytest tests/test_stress.py           # stress tests, batch equivalence
 pytest tests/test_ultimate_stress.py  # extended stress tests
 ```
 
-151 tests across 9 files. Tests use `tests/fixtures/sample.csv` (15 rows, 3 classes). All tests use small `n_layers` (1-3) and `bucket` (3-5) for speed.
+174 tests across 10 files. Tests use `tests/fixtures/sample.csv` (15 rows, 3 classes). All tests use small `n_layers` (1-3) and `bucket` (3-5) for speed.
 
 ## Stochastic Behavior
 
@@ -371,7 +375,7 @@ model = Snake(data, n_layers=5)
 
 ## Optional Cython Acceleration
 
-Snake v4.3.3 includes optional Cython-accelerated hot paths in `algorithmeai/_accel.pyx`:
+Snake includes optional Cython-accelerated hot paths in `algorithmeai/_accel.pyx`:
 
 **Inference functions (v4.3.0):**
 - `apply_literal_fast` — single literal evaluation
@@ -380,7 +384,10 @@ Snake v4.3.3 includes optional Cython-accelerated hot paths in `algorithmeai/_ac
 - `get_lookalikes_fast` — full inference pipeline
 - `batch_predict_fast` — batch inference
 
-**Training functions (v4.3.3):**
+**Batch acceleration (v4.4.2):**
+- `batch_get_lookalikes_fast` — batch lookalike computation with amortized routing (groups queries by bucket per layer)
+
+**Training functions (v4.3.2):**
 - `filter_ts_remainder_fast` — filter Ts by literal (used in construct_clause)
 - `minimize_clause_fast` — full clause minimization loop in C
 - `filter_indices_by_literal_fast` — index-based population filtering (used in build_condition)
@@ -390,7 +397,7 @@ Snake v4.3.3 includes optional Cython-accelerated hot paths in `algorithmeai/_ac
 try:
     from ._accel import (apply_literal_fast, apply_clause_fast,
                          traverse_chain_fast, get_lookalikes_fast,
-                         batch_predict_fast,
+                         batch_predict_fast, batch_get_lookalikes_fast,
                          filter_ts_remainder_fast, minimize_clause_fast,
                          filter_indices_by_literal_fast,
                          filter_consequence_fast)
@@ -451,11 +458,55 @@ for row in batch:
 ```python
 audit = model.get_audit(X)
 # audit is a multi-line string with:
-#   - Per-layer bucket routing (IF/ELIF/ELSE)
-#   - Per-bucket lookalike vote breakdown
-#   - Global summary with probabilities
+#   - Lookalike summary with percentages and examples per class
+#   - Probability distribution
+#   - Per-layer detail:
+#     - Routing AND: why X was routed to this bucket (negated skip literals + passing condition)
+#     - Lookalike AND: per-lookalike explanation of matching clause negations
 #   - Final prediction
 # Feed this to an LLM for explanation generation
+```
+
+### Audit structure (v4.4.2)
+
+The audit system produces two AND statements per layer:
+
+**Routing AND:** Explains why X was routed to a particular bucket in the IF/ELIF/ELSE chain. For each skipped branch, it shows the negated first-failing literal. For the matching branch, it shows the passing condition literals.
+
+**Lookalike AND:** For each matching lookalike in the bucket, shows the AND of negated clause literals that explain why the lookalike was matched. A lookalike matches when ALL its associated clauses evaluate to FALSE on X. Each clause is an OR of literals, so FALSE means every literal in the clause is FALSE. Negating each literal gives a human-readable description of what IS true.
+
+```
+### BEGIN AUDIT ###
+  Prediction: ClassA
+  Layers: 5, Lookalikes: 12
+
+  LOOKALIKE SUMMARY
+  ================================================
+  ClassA               60.0% (3/5) ████████████░░░░░░░░
+    e.g. 44.2 LowE
+  ClassB               40.0% (2/5) ████████░░░░░░░░░░░░
+    e.g. Float 4mm
+
+  PROBABILITY
+  ================================================
+  P(ClassA) = 60.0% ████████████░░░░░░░░
+  P(ClassB) = 40.0% ████████░░░░░░░░░░░░
+
+  ================================================
+  LAYER 0
+  ================================================
+
+  Routing AND (bucket 2/4, 15 members):
+    "size" <= 10 AND "color" does NOT contain "r" AND "shape" contains "round"
+
+  Lookalike AND (3 matches):
+    Lookalike #42 [ClassA]: 44.2 LowE
+      AND: "denomination" does NOT contain "float" AND "client" does NOT contain "VIT"
+    Lookalike #17 [ClassA]: Stadip 44.2
+      AND: "denomination" does NOT contain "float"
+
+  >> PREDICTION: ClassA
+### END AUDIT ###
 ```
 
 ## Things That Will Bite You
@@ -476,9 +527,19 @@ audit = model.get_audit(X)
 
 8. **`exclude_features_index` only works with CSV flow.** The list[dict] and DataFrame flows don't support it — filter your data before passing it in.
 
-9. **Binary True/False targets are stored as int 0/1.** As of v4.3.3, `"True"`/`"False"` strings are correctly converted in both CSV and list[dict] flows. Compare predictions against `0`/`1` (int), not `"True"`/`"False"` (str).
+9. **Binary True/False targets are stored as int 0/1.** As of v4.3.2+, `"True"`/`"False"` strings are correctly converted in both CSV and list[dict] flows. Compare predictions against `0`/`1` (int), not `"True"`/`"False"` (str).
 
 ## Changelog
+
+### v4.4.2 (Feb 2026)
+
+- **Perfected audit system**: Two clean AND statements per layer — Routing AND (why X was routed to this bucket) and Lookalike AND (per-sample clause negation explanation). Replaces the v4.3.x stub that only showed clause indices.
+- **Parallel training**: `workers=N` parameter enables multiprocessing.Pool for layer construction. Each worker builds one layer with a unique RNG seed. `workers=1` (default) preserves sequential behavior.
+- **Progress file**: `progress_file` parameter writes JSON progress updates during training with layer/ETA info, useful for UI integration.
+- **Cython batch acceleration**: `batch_get_lookalikes_fast` groups queries by routed bucket per layer, amortizing chain traversal. Used by `get_batch_prediction` when Cython is compiled.
+- **Lookalike summary**: Audit now starts with a summary showing actual feature examples and percentages per class.
+- **174 tests**: Extended test suite from 151 to 174 across 10 files (added audit tests, parallel training tests, batch equivalence tests).
+- **New methods**: `_negate_literal`, `_first_failing_literal`, restored `get_plain_text_assertion` with bucket-aware clause resolution.
 
 ### v4.3.3 (Feb 2026)
 

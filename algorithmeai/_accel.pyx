@@ -68,11 +68,12 @@ def traverse_chain_fast(list chain, dict X, list header):
     cdef dict entry
     cdef list condition
     cdef list lit
+    cdef bint all_match
     for entry in chain:
         condition = entry["condition"]
         if condition is None:
             return entry
-        cdef bint all_match = True
+        all_match = True
         for lit in condition:
             if not apply_literal_fast(X, lit, header):
                 all_match = False
@@ -192,6 +193,58 @@ def filter_consequence_fast(list local_pop, list local_targets, object target_va
             else:
                 remaining_fs.append(local_pop[i])
     return consequence, remaining_fs
+
+
+def batch_get_lookalikes_fast(list layers, list Xs, list header, list targets):
+    """Batch lookalike computation: route all queries per layer, group by bucket.
+    Returns list of lookalike-lists, one per query.
+    Amortizes chain traversal and improves cache locality for clause evaluation."""
+    cdef int n_queries = len(Xs)
+    cdef int q_idx, i, global_idx, c_idx
+    cdef list result = [[] for _ in range(n_queries)]
+    cdef list seen_sets = [set() for _ in range(n_queries)]
+    cdef dict X, bucket, grouped
+    cdef list layer, clause_bool, condition
+    cdef set negated
+    cdef bint all_negated
+
+    for layer in layers:
+        # Group all queries by their routed bucket (using id for same-object grouping)
+        grouped = {}  # id(bucket) -> list of (q_idx, X)
+        for q_idx in range(n_queries):
+            X = Xs[q_idx]
+            bucket = traverse_chain_fast(layer, X, header)
+            if bucket is None:
+                continue
+            bucket_id = id(bucket)
+            if bucket_id not in grouped:
+                grouped[bucket_id] = (bucket, [])
+            grouped[bucket_id][1].append((q_idx, X))
+
+        # Process each bucket group
+        for bucket_id in grouped:
+            bucket, queries = grouped[bucket_id]
+            clauses = bucket["clauses"]
+            members = bucket["members"]
+            lookalikes_map = bucket["lookalikes"]
+
+            for q_idx, X in queries:
+                clause_bool = [apply_clause_fast(X, c, header) for c in clauses]
+                negated = {i for i in range(len(clause_bool)) if not clause_bool[i]}
+                for l in lookalikes_map:
+                    for condition in lookalikes_map[l]:
+                        all_negated = True
+                        for c_idx in condition:
+                            if c_idx not in negated:
+                                all_negated = False
+                                break
+                        if all_negated:
+                            global_idx = members[int(l)]
+                            if global_idx not in seen_sets[q_idx]:
+                                seen_sets[q_idx].add(global_idx)
+                                result[q_idx].append([global_idx, targets[global_idx], condition])
+
+    return result
 
 
 def batch_predict_fast(list layers, list Xs, list header, list targets, list unique_targets):

@@ -99,7 +99,7 @@ class TestCLIInfo:
     def test_info_output(self):
         result = _run("info", self.model_path)
         assert result.returncode == 0
-        assert "v4.3.3" in result.stdout
+        assert "v4.4.2" in result.stdout
         assert "Target:" in result.stdout
         assert "Population:" in result.stdout
         assert "Layers:" in result.stdout

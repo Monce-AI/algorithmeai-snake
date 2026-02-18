@@ -504,3 +504,44 @@ class TestFullTrainingStress:
             assert "probability" in r
             assert "confidence" in r
             assert abs(sum(r["probability"].values()) - 1.0) < 1e-9
+
+
+class TestBatchEquivalence:
+    def test_batch_matches_sequential(self):
+        """get_batch_prediction results should match sequential get_prediction calls."""
+        random.seed(42)
+        data = [
+            {"label": f"c{i % 3}", "x": f"word_{i}", "y": float(i)}
+            for i in range(15)
+        ]
+        s = Snake(data, n_layers=3, bucket=5, vocal=False)
+        queries = [{"x": f"word_{random.randint(0, 14)}", "y": random.uniform(0, 15)} for _ in range(20)]
+        batch_results = s.get_batch_prediction(queries)
+        for i, X in enumerate(queries):
+            individual_pred = s.get_prediction(X)
+            assert batch_results[i]["prediction"] == individual_pred, (
+                f"Query {i}: batch={batch_results[i]['prediction']} != individual={individual_pred}"
+            )
+
+    def test_batch_probability_matches_sequential(self):
+        """Batch probability vectors should match sequential get_probability calls."""
+        data = [
+            {"label": "A", "x": "foo", "y": 1.0},
+            {"label": "B", "x": "bar", "y": 2.0},
+            {"label": "C", "x": "baz", "y": 3.0},
+            {"label": "A", "x": "foo2", "y": 4.0},
+            {"label": "B", "x": "bar2", "y": 5.0},
+        ]
+        s = Snake(data, n_layers=2, bucket=3, vocal=False)
+        queries = [
+            {"x": "foo", "y": 1.0},
+            {"x": "bar", "y": 2.0},
+            {"x": "unknown", "y": 99.0},
+        ]
+        batch_results = s.get_batch_prediction(queries)
+        for i, X in enumerate(queries):
+            individual_prob = s.get_probability(X)
+            for k in individual_prob:
+                assert abs(batch_results[i]["probability"].get(k, 0) - individual_prob[k]) < 1e-9, (
+                    f"Query {i}, class {k}: batch={batch_results[i]['probability'].get(k)} != individual={individual_prob[k]}"
+                )

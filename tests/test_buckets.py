@@ -115,7 +115,7 @@ class TestAudit:
         X = {"color": "red", "size": 10.0, "shape": "circle"}
         audit = s.get_audit(X)
         assert "LAYER 0" in audit
-        assert "GLOBAL SUMMARY" in audit
+        assert "PROBABILITY" in audit
         assert "PREDICTION" in audit
         assert "END AUDIT" in audit
 
@@ -123,12 +123,12 @@ class TestAudit:
         s = Snake(SAMPLE_CSV, target_index=3, n_layers=2, bucket=5, vocal=False)
         X = {"color": "blue", "size": 20.0, "shape": "square"}
         audit = s.get_audit(X)
-        assert "BUCKET" in audit
+        assert "bucket" in audit.lower()
         assert "members" in audit
 
     def test_log_contains_banner(self):
         s = Snake(SAMPLE_CSV, target_index=3, n_layers=1, bucket=5, vocal=False)
-        assert "v4.3.3" in s.log
+        assert "v4.4.2" in s.log
         assert "Charles Dana" in s.log
 
 

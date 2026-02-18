@@ -9,7 +9,7 @@ import json
 def main():
     parser = argparse.ArgumentParser(
         prog="snake",
-        description="Snake SAT-ensembled bucketed multiclass classifier v4.3.3"
+        description="Snake SAT-ensembled bucketed multiclass classifier v4.4.2"
     )
     sub = parser.add_subparsers(dest="command")
 

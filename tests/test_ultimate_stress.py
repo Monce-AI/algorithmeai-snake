@@ -309,7 +309,7 @@ class TestUltimatePrediction:
         audit = s.get_audit(query)
         assert "LAYER 0" in audit
         assert "PREDICTION" in audit
-        assert "BUCKET" in audit
+        assert "bucket" in audit.lower()
 
     def test_empty_query(self):
         """Empty dict {} — uniform probability, no crash."""

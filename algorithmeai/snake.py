@@ -7,7 +7,7 @@ from time import time
 try:
     from ._accel import (apply_literal_fast, apply_clause_fast,
                          traverse_chain_fast, get_lookalikes_fast,
-                         batch_predict_fast,
+                         batch_predict_fast, batch_get_lookalikes_fast,
                          filter_ts_remainder_fast, minimize_clause_fast,
                          filter_indices_by_literal_fast,
                          filter_consequence_fast)
@@ -19,7 +19,7 @@ except ImportError:
 #                                                              #
 #    Algorithme.ai : Snake         Author : Charles Dana       #
 #                                                              #
-#    v4.3.3 — SAT-ensembled bucketed multiclass classifier     #
+#    v4.4.2 — SAT-ensembled bucketed multiclass classifier     #
 #                                                              #
 ################################################################
 
@@ -27,7 +27,7 @@ _BANNER = """################################################################
 #                                                              #
 #    Algorithme.ai : Snake         Author : Charles Dana       #
 #                                                              #
-#    v4.3.3 — SAT-ensembled bucketed multiclass classifier     #
+#    v4.4.2 — SAT-ensembled bucketed multiclass classifier     #
 #                                                              #
 ################################################################
 """
@@ -180,7 +180,8 @@ Snake() of data will provide insights
 """
 class Snake():
     def __init__(self, Knowledge, target_index=0, excluded_features_index=(),
-                 n_layers=5, bucket=250, noise=0.25, vocal=False, saved=False):
+                 n_layers=5, bucket=250, noise=0.25, vocal=False, saved=False,
+                 progress_file=None, workers=1):
         # --- logging setup ---
         global _snake_instance_counter
         _snake_instance_counter += 1
@@ -227,6 +228,11 @@ class Snake():
         self.bucket = bucket
         self.noise = noise
         self.vocal = vocal
+        self.progress_file = progress_file
+        self.workers = workers
+        self._t0 = 0
+        self._avg_per_layer = 0
+        self._current_layer = 0
 
         # Detect input type and dispatch
         if isinstance(Knowledge, str) and Knowledge.endswith(".json"):
@@ -479,29 +485,67 @@ class Snake():
         self.qprint(f"# ============================================================")
         self.qprint(f"#")
 
-        t_0 = time()
-        for i in range(self.n_layers):
-            t_layer_start = time()
-            self.qprint(f"#")
-            self.qprint(f"# >>> LAYER {i+1}/{self.n_layers} — starting construction...")
-            self.construct_layer()
-            t_layer_end = time()
-            layer_time = t_layer_end - t_layer_start
-            elapsed_total = t_layer_end - t_0
-            layers_done = i + 1
-            layers_left = self.n_layers - layers_done
-            avg_per_layer = elapsed_total / layers_done
-            eta = avg_per_layer * layers_left
+        self._t0 = time()
 
-            # Count total clauses and buckets in this layer
-            layer = self.layers[-1]
-            n_buckets = len(layer)
-            n_clauses = sum(len(entry["clauses"]) for entry in layer)
+        if self.workers > 1:
+            # === PARALLEL LAYER CONSTRUCTION ===
+            import multiprocessing
+            ctx = multiprocessing.get_context("fork")
+            n_workers = min(self.workers, self.n_layers)
+            self.qprint(f"# Parallel mode: {n_workers} workers for {self.n_layers} layers")
 
-            self.qprint(f"# <<< LAYER {i+1}/{self.n_layers} DONE in {layer_time:.2f}s — {n_buckets} buckets, {n_clauses} clauses")
-            self.qprint(f"#     elapsed={elapsed_total:.2f}s, avg/layer={avg_per_layer:.2f}s, ETA={eta:.2f}s ({layers_left} layers left)")
+            base_seed = int(time() * 1000) % (2**31)
+            # Lightweight per-job args — large data sent once via initializer
+            jobs = [
+                (self.bucket, self.noise, base_seed + i, i, self.n_layers)
+                for i in range(self.n_layers)
+            ]
 
-        total_time = time() - t_0
+            with ctx.Pool(n_workers, initializer=_init_worker,
+                          initargs=(self.population, self.targets,
+                                    self.header, self.datatypes)) as pool:
+                for i, layer in enumerate(pool.imap_unordered(_build_layer_worker, jobs)):
+                    self.layers.append(layer)
+                    elapsed = time() - self._t0
+                    layers_done = len(self.layers)
+                    layers_left = self.n_layers - layers_done
+                    avg = elapsed / layers_done
+                    eta = avg * layers_left / n_workers if layers_left > 0 else 0
+
+                    n_buckets = len(layer)
+                    n_clauses = sum(len(entry["clauses"]) for entry in layer)
+                    self.qprint(f"# <<< LAYER {layers_done}/{self.n_layers} DONE (parallel) — {n_buckets} buckets, {n_clauses} clauses, elapsed={elapsed:.2f}s, ETA={eta:.2f}s")
+                    self._write_progress(layers_done, eta, elapsed)
+
+        else:
+            # === SEQUENTIAL (original) ===
+            self._avg_per_layer = 0
+            self._current_layer = 0
+            for i in range(self.n_layers):
+                self._current_layer = i
+                t_layer_start = time()
+                self.qprint(f"#")
+                self.qprint(f"# >>> LAYER {i+1}/{self.n_layers} — starting construction...")
+                self.construct_layer()
+                t_layer_end = time()
+                layer_time = t_layer_end - t_layer_start
+                elapsed_total = t_layer_end - self._t0
+                layers_done = i + 1
+                layers_left = self.n_layers - layers_done
+                self._avg_per_layer = elapsed_total / layers_done
+                eta = self._avg_per_layer * layers_left
+
+                # Count total clauses and buckets in this layer
+                layer = self.layers[-1]
+                n_buckets = len(layer)
+                n_clauses = sum(len(entry["clauses"]) for entry in layer)
+
+                self.qprint(f"# <<< LAYER {i+1}/{self.n_layers} DONE in {layer_time:.2f}s — {n_buckets} buckets, {n_clauses} clauses")
+                self.qprint(f"#     elapsed={elapsed_total:.2f}s, avg/layer={self._avg_per_layer:.2f}s, ETA={eta:.2f}s ({layers_left} layers left)")
+
+                self._write_progress(layers_done, eta, elapsed_total)
+
+        total_time = time() - self._t0
         total_clauses = sum(len(entry["clauses"]) for layer in self.layers for entry in layer)
         total_buckets = sum(len(layer) for layer in self.layers)
         self.qprint(f"#")
@@ -526,6 +570,27 @@ class Snake():
             self._logger.debug(str(txt))
         else:
             self._logger.info(str(txt))
+
+    def _write_progress(self, layers_done, eta_seconds, elapsed_seconds,
+                        bucket=None, n_buckets=None, eta_bucket_seconds=None):
+        """Write training progress to progress_file (if set)."""
+        if not self.progress_file:
+            return
+        try:
+            data = {
+                "layer": layers_done,
+                "n_layers": self.n_layers,
+                "elapsed_seconds": round(elapsed_seconds, 1),
+                "eta_seconds": round(eta_seconds, 1),
+            }
+            if bucket is not None:
+                data["bucket"] = bucket
+                data["n_buckets"] = n_buckets
+                data["eta_bucket_seconds"] = round(eta_bucket_seconds, 1)
+            with open(self.progress_file, "w") as _pf:
+                json.dump(data, _pf)
+        except Exception:
+            pass
 
     @property
     def log(self):
@@ -988,6 +1053,15 @@ class Snake():
                 eta_buckets = 0
             self.qprint(f"#   [layer] BUCKET {b_idx} DONE: {len(entry['clauses'])} clauses in {bucket_time:.2f}s — ETA remaining buckets: {eta_buckets:.2f}s")
 
+            # Global ETA: remaining buckets in this layer + avg_per_layer * remaining layers
+            layers_left = self.n_layers - (self._current_layer + 1)
+            global_eta = eta_buckets + self._avg_per_layer * layers_left
+            elapsed = time() - self._t0
+            self._write_progress(
+                self._current_layer + 1, global_eta, elapsed,
+                bucket=buckets_done, n_buckets=len(chain), eta_bucket_seconds=eta_buckets,
+            )
+
         layer_time = time() - t_layer
         self.qprint(f"#   [layer] Layer construction total: {layer_time:.2f}s")
         self.layers.append(chain)
@@ -1079,10 +1153,22 @@ class Snake():
     """
     def get_batch_prediction(self, Xs):
         if _HAS_ACCEL:
-            return batch_predict_fast(
-                self.layers, Xs, self.header, self.targets,
-                self._sorted_unique_targets()
+            # Use batch_get_lookalikes_fast for amortized routing, then derive per-query
+            all_lookalikes = batch_get_lookalikes_fast(
+                self.layers, Xs, self.header, self.targets
             )
+            results = []
+            for lookalikes in all_lookalikes:
+                prob_tuples = self._get_probability_from_lookalikes(lookalikes)
+                probability = self._prob_to_dict(prob_tuples)
+                prediction = self._prediction_from_prob(prob_tuples)
+                confidence = max(p for _, p in prob_tuples)
+                results.append({
+                    "prediction": prediction,
+                    "probability": probability,
+                    "confidence": confidence,
+                })
+            return results
         results = []
         for X in Xs:
             lookalikes = self.get_lookalikes(X)
@@ -1100,6 +1186,18 @@ class Snake():
     # ------------------------------------------------------------------
     # Enhanced Audit
     # ------------------------------------------------------------------
+
+    def _negate_literal(self, literal):
+        """Return a literal with flipped negation."""
+        index, value, negat, datat = literal
+        return (index, value, not negat, datat)
+
+    def _first_failing_literal(self, X, condition):
+        """Find the first literal in a condition that evaluates to False for X."""
+        for lit in condition:
+            if not self.apply_literal(X, lit):
+                return lit
+        return None
 
     def _format_literal_text(self, literal):
         """Human-readable description of a single literal."""
@@ -1139,18 +1237,54 @@ class Snake():
         filled = int(pct / 100 * width)
         return "\u2588" * filled + "\u2591" * (width - filled)
 
-    def get_plain_text_assertion(self, condition, l):
-        """Partial audit for a given lookalike (backwards compat)."""
-        plain_text_assertion = f"""
-        # Datapoint is a lookalike to #{l} of class [{self.targets[int(l)]}]
-        - {self.population[int(l)]}
+    def get_plain_text_assertion(self, condition, l, bucket_clauses=None, bucket_members=None):
+        """Human-readable AND statement explaining why a lookalike matched.
 
-        Because of the following AND statement that applies to both
+        Args:
+            condition: list of local clause indices
+            l: local index within bucket
+            bucket_clauses: list of clauses from the matched bucket
+            bucket_members: list of global indices for the bucket
         """
-        # In bucketed mode, condition is local clause indices — we can't resolve global clauses
-        # Just note the condition indices
-        plain_text_assertion += f"\n\u2022 Matched via local clause condition {condition}"
-        return plain_text_assertion
+        # Resolve global index
+        if bucket_members is not None:
+            global_idx = bucket_members[int(l)]
+        else:
+            global_idx = int(l)
+        target_val = self.targets[global_idx]
+
+        # Extract a short label from the sample (first text feature, truncated)
+        sample = self.population[global_idx]
+        label_parts = []
+        for h in self.header[1:]:
+            v = sample.get(h, "")
+            if isinstance(v, str) and v:
+                label_parts.append(v)
+                break
+        sample_label = (label_parts[0][:60] if label_parts else str(global_idx))
+
+        if bucket_clauses is None:
+            # Backwards compat: no clause data available
+            return f"    Lookalike #{global_idx} [{target_val}]: {sample_label}\n      AND: matched via condition {condition}"
+
+        # Build the AND statement by negating each literal in each clause
+        # A lookalike is matched when ALL its clauses evaluate to FALSE on X.
+        # A clause (OR of literals) is FALSE iff EVERY literal in it is FALSE.
+        # Negating each literal gives us what IS true when the literal is false.
+        and_parts = []
+        seen = set()
+        for c_idx in condition:
+            if c_idx < len(bucket_clauses):
+                clause = bucket_clauses[c_idx]
+                for lit in clause:
+                    negated = self._negate_literal(lit)
+                    desc = self._format_literal_text(negated)
+                    if desc not in seen:
+                        seen.add(desc)
+                        and_parts.append(desc)
+
+        and_str = " AND ".join(and_parts) if and_parts else "(unconditional)"
+        return f"    Lookalike #{global_idx} [{target_val}]: {sample_label}\n      AND: {and_str}"
 
     """
     Audit for a given datapoint — enhanced per-layer ASCII
@@ -1165,72 +1299,126 @@ class Snake():
 
     def _get_audit_with_precomputed(self, X, lookalikes, probability, prediction):
         """Build audit string using pre-computed lookalikes, probability, and prediction."""
-        audit = ""
+        audit = "### BEGIN AUDIT ###\n"
+        audit += f"  Prediction: {prediction}\n"
+        audit += f"  Layers: {len(self.layers)}, Lookalikes: {len(lookalikes)}\n"
 
-        for layer_idx, chain in enumerate(self.layers):
-            audit += f"\n{'='*50}\n  LAYER {layer_idx}\n{'='*50}\n"
-            matched_bucket_idx = None
-            for b_idx, entry in enumerate(chain):
-                cond = entry["condition"]
-                n_members = len(entry["members"])
-                if cond is None:
-                    prefix = "        ELSE:"
-                else:
-                    parts = [self._format_literal_text(lit) for lit in cond]
-                    gate = " AND ".join(parts)
-                    if b_idx == 0:
-                        prefix = f"  >>>   IF   {gate}:"
+        # --- LOOKALIKE SUMMARY ---
+        audit += f"\n  LOOKALIKE SUMMARY\n  {'='*48}\n"
+        if lookalikes:
+            # Group by target
+            counts = {}
+            key_to_val = {}
+            examples = {}
+            for triple in lookalikes:
+                global_idx, target_val, _ = triple
+                k = self._target_key(target_val)
+                counts[k] = counts.get(k, 0) + 1
+                key_to_val[k] = target_val
+                if k not in examples:
+                    examples[k] = []
+                if len(examples[k]) < 2:
+                    # Extract sample label
+                    sample = self.population[global_idx]
+                    for h in self.header[1:]:
+                        v = sample.get(h, "")
+                        if isinstance(v, str) and v:
+                            examples[k].append(v[:60])
+                            break
                     else:
-                        prefix = f"        ELIF {gate}:"
+                        examples[k].append(str(global_idx))
+            total = len(lookalikes)
+            for k in sorted(counts, key=lambda x: -counts[x]):
+                t = key_to_val[k]
+                cnt = counts[k]
+                pct = 100 * cnt / total
+                bar = self._format_bar(pct)
+                t_str = str(t)
+                padding = max(1, 20 - len(t_str))
+                audit += f"  {t_str}{' '*padding}{pct:5.1f}% ({cnt}/{total}) {bar}\n"
+                for ex in examples.get(k, []):
+                    audit += f"    e.g. {ex}\n"
+        else:
+            audit += "  (no lookalikes found)\n"
 
-                # Check if X routes here
-                if matched_bucket_idx is None:
-                    if cond is None:
-                        routes_here = True
-                    else:
-                        routes_here = all(self.apply_literal(X, lit) for lit in cond)
-                else:
-                    routes_here = False
-
-                if routes_here and matched_bucket_idx is None:
-                    matched_bucket_idx = b_idx
-                    audit += f"{prefix}\n  >>>     -> BUCKET {b_idx} ({n_members} members)\n"
-                else:
-                    audit += f"{prefix}\n            -> BUCKET {b_idx} ({n_members} members)\n"
-
-            # Show local lookalikes for matched bucket
-            if matched_bucket_idx is not None:
-                bucket = chain[matched_bucket_idx]
-                clause_bool = [self.apply_clause(X, c) for c in bucket["clauses"]]
-                negated = {i for i in range(len(clause_bool)) if not clause_bool[i]}
-                local_lookalikes = []
-                for l in bucket["lookalikes"]:
-                    for condition in bucket["lookalikes"][l]:
-                        if all(c_idx in negated for c_idx in condition):
-                            global_idx = bucket["members"][int(l)]
-                            local_lookalikes.append(self.targets[global_idx])
-
-                audit += f"\n  Within BUCKET {matched_bucket_idx}:\n"
-                audit += f"    {len(local_lookalikes)} lookalikes found\n"
-                if local_lookalikes:
-                    counts = {}
-                    key_to_val = {}
-                    for t in local_lookalikes:
-                        k = self._target_key(t)
-                        counts[k] = counts.get(k, 0) + 1
-                        key_to_val[k] = t
-                    for k in sorted(counts, key=lambda x: -counts[x]):
-                        t = key_to_val[k]
-                        pct = 100 * counts[k] / len(local_lookalikes)
-                        bar = self._format_bar(pct)
-                        audit += f"    P({t}){' '*(20-len(str(t)))}= {pct:5.1f}% {bar}\n"
-
-        audit += f"\n{'='*50}\n  GLOBAL SUMMARY ({len(self.layers)} layers)\n{'='*50}\n"
-        audit += f"  Total lookalikes: {len(lookalikes)}\n"
+        # --- PROBABILITY ---
+        audit += f"\n  PROBABILITY\n  {'='*48}\n"
         for t in sorted(probability, key=lambda k: -probability[k]):
             if probability[t] > 0:
-                audit += f"  P({t}) = {100*probability[t]:.1f}%\n"
-        audit += f"  >> PREDICTION: {prediction}\n"
+                pct = 100 * probability[t]
+                bar = self._format_bar(pct)
+                audit += f"  P({t}) = {pct:.1f}% {bar}\n"
+
+        # --- PER-LAYER DETAIL ---
+        for layer_idx, chain in enumerate(self.layers):
+            audit += f"\n  {'='*48}\n  LAYER {layer_idx}\n  {'='*48}\n"
+
+            # Walk the chain to find the matched bucket, collecting skip reasons
+            matched_bucket_idx = None
+            routing_and_parts = []
+
+            for b_idx, entry in enumerate(chain):
+                cond = entry["condition"]
+                if matched_bucket_idx is not None:
+                    break
+                if cond is None:
+                    # ELSE bucket
+                    matched_bucket_idx = b_idx
+                else:
+                    if all(self.apply_literal(X, lit) for lit in cond):
+                        # X matches this condition — routed here
+                        matched_bucket_idx = b_idx
+                        # Add the passing literals to routing AND
+                        for lit in cond:
+                            routing_and_parts.append(self._format_literal_text(lit))
+                    else:
+                        # X fails this condition — find first failing literal and negate it
+                        fail_lit = self._first_failing_literal(X, cond)
+                        if fail_lit is not None:
+                            negated = self._negate_literal(fail_lit)
+                            routing_and_parts.append(self._format_literal_text(negated))
+
+            # Emit Routing AND
+            if matched_bucket_idx is not None:
+                bucket = chain[matched_bucket_idx]
+                n_members = len(bucket["members"])
+                if bucket["condition"] is None and len(chain) > 1:
+                    routing_desc = " AND ".join(routing_and_parts) if routing_and_parts else "(all conditions failed)"
+                    audit += f"\n  Routing AND (default — ELSE bucket, {n_members} members):\n"
+                    audit += f"    {routing_desc}\n"
+                elif bucket["condition"] is None:
+                    audit += f"\n  Routing AND (single bucket, {n_members} members):\n"
+                    audit += f"    (only bucket — no routing needed)\n"
+                else:
+                    routing_desc = " AND ".join(routing_and_parts) if routing_and_parts else "(direct match)"
+                    audit += f"\n  Routing AND (bucket {matched_bucket_idx + 1}/{len(chain)}, {n_members} members):\n"
+                    audit += f"    {routing_desc}\n"
+
+                # Compute local lookalikes with their conditions
+                clause_bool = [self.apply_clause(X, c) for c in bucket["clauses"]]
+                negated_set = {i for i in range(len(clause_bool)) if not clause_bool[i]}
+                local_matches = []
+                for l in bucket["lookalikes"]:
+                    for condition in bucket["lookalikes"][l]:
+                        if all(c_idx in negated_set for c_idx in condition):
+                            local_matches.append((l, condition))
+
+                audit += f"\n  Lookalike AND ({len(local_matches)} matches):\n"
+                shown = 0
+                max_show = 5
+                for l, condition in local_matches:
+                    if shown >= max_show:
+                        remaining = len(local_matches) - max_show
+                        audit += f"    ... and {remaining} more\n"
+                        break
+                    audit += self.get_plain_text_assertion(
+                        condition, l,
+                        bucket_clauses=bucket["clauses"],
+                        bucket_members=bucket["members"]
+                    ) + "\n"
+                    shown += 1
+
+        audit += f"\n  >> PREDICTION: {prediction}\n"
         audit += "### END AUDIT ###\n"
         return audit
 
@@ -1240,7 +1428,7 @@ class Snake():
 
     def to_json(self, fout="snakeclassifier.json"):
         snake_classifier = {
-            "version": "4.3.3",
+            "version": "4.4.2",
             "population": self.population,
             "header": self.header,
             "target": self.target,
@@ -1251,6 +1439,7 @@ class Snake():
                 "bucket": self.bucket,
                 "noise": self.noise,
                 "vocal": self.vocal,
+                "workers": self.workers,
             },
             "layers": self.layers,
             "log": self.log
@@ -1280,6 +1469,7 @@ class Snake():
             self.bucket = cfg.get("bucket", self.bucket)
             self.noise = cfg.get("noise", self.noise)
             self.vocal = cfg.get("vocal", self.vocal)
+            self.workers = cfg.get("workers", 1)
         elif "n_layers" in loaded_module:
             self.n_layers = loaded_module["n_layers"]
             self.vocal = loaded_module.get("vocal", self.vocal)
@@ -1388,3 +1578,67 @@ class Snake():
         self.qprint(f"# ============================================================")
         self.qprint(f"#   VALIDATION COMPLETE — {self.n_layers} layers retained")
         self.qprint(f"# ============================================================")
+
+
+# ---------------------------------------------------------------------------
+# Module-level worker functions (must be top-level for multiprocessing)
+# ---------------------------------------------------------------------------
+
+# Per-worker shared data (set once via Pool initializer, reused across jobs)
+_worker_data = {}
+
+
+def _init_worker(population, targets, header, datatypes):
+    """Pool initializer — sends large data once per worker process."""
+    global _worker_data
+    _worker_data = {
+        "population": population,
+        "targets": targets,
+        "header": header,
+        "datatypes": datatypes,
+    }
+
+
+def _setup_worker_logger(s, seed):
+    """Attach a silent buffer-only logger to a worker Snake instance."""
+    global _snake_instance_counter
+    _snake_instance_counter += 1
+    s._logger = logging.getLogger(f"snake.worker.{_snake_instance_counter}.{seed}")
+    s._logger.setLevel(logging.DEBUG)
+    s._logger.propagate = False
+    s._logger.handlers.clear()
+    s._buffer_handler = _StringBufferHandler()
+    s._buffer_handler.setLevel(logging.DEBUG)
+    s._buffer_handler.setFormatter(logging.Formatter("%(message)s"))
+    s._logger.addHandler(s._buffer_handler)
+
+
+def _build_layer_worker(args):
+    """Build one Snake layer in a separate process."""
+    bucket, noise, seed, layer_idx, n_layers = args
+    import random as _rng
+    _rng.seed(seed)
+
+    # Lightweight Snake instance — just enough for construct_layer() methods
+    s = Snake.__new__(Snake)
+    s.population = _worker_data["population"]
+    s.targets = _worker_data["targets"]
+    s.header = _worker_data["header"]
+    s.datatypes = _worker_data["datatypes"]
+    s.bucket = bucket
+    s.noise = noise
+    s.n_layers = n_layers
+    s.layers = []
+    s.clauses = []
+    s.lookalikes = {}
+    s.vocal = False
+    s.progress_file = None
+    s.workers = 1
+    s._t0 = time()
+    s._avg_per_layer = 0
+    s._current_layer = layer_idx
+
+    _setup_worker_logger(s, seed)
+
+    s.construct_layer()
+    return s.layers[0]

@@ -11,7 +11,7 @@ SAMPLE_CSV = os.path.join(FIXTURES, "sample.csv")
 
 
 def test_version():
-    assert __version__ == "4.3.3"
+    assert __version__ == "4.4.2"
 
 
 def test_floatconversion():
@@ -299,7 +299,7 @@ class TestVocalModes:
         Snake(SAMPLE_CSV, target_index=3, n_layers=1, bucket=5, vocal=True)
         captured = capsys.readouterr()
         assert len(captured.out) > 0
-        assert "v4.3.3" in captured.out
+        assert "v4.4.2" in captured.out
 
 
 # ---- Backwards compat: flat JSON ----
@@ -330,3 +330,55 @@ class TestBackwardsCompat:
             assert s2.layers[0][0]["condition"] is None
         finally:
             os.unlink(path)
+
+
+# ---- Parallel training ----
+
+class TestParallelTraining:
+    def test_workers_2_produces_valid_model(self):
+        """workers=2 should produce a valid model with correct layer count."""
+        data = [
+            {"fruit": "apple", "weight": 150, "color": "red"},
+            {"fruit": "apple", "weight": 160, "color": "red"},
+            {"fruit": "banana", "weight": 120, "color": "yellow"},
+            {"fruit": "banana", "weight": 130, "color": "yellow"},
+            {"fruit": "cherry", "weight": 5, "color": "red"},
+            {"fruit": "cherry", "weight": 6, "color": "dark red"},
+        ]
+        s = Snake(data, n_layers=2, bucket=3, vocal=False, workers=2)
+        assert len(s.layers) == 2
+        pred = s.get_prediction({"weight": 150, "color": "red"})
+        assert pred in ["apple", "banana", "cherry"]
+
+    def test_workers_1_equivalent_to_default(self):
+        """workers=1 should behave the same as no workers param."""
+        data = [
+            {"label": "A", "x": "foo", "y": 1.0},
+            {"label": "B", "x": "bar", "y": 2.0},
+            {"label": "A", "x": "baz", "y": 3.0},
+            {"label": "B", "x": "qux", "y": 4.0},
+        ]
+        s = Snake(data, n_layers=2, bucket=3, vocal=False, workers=1)
+        assert len(s.layers) == 2
+
+    def test_progress_file_written(self):
+        """progress_file should be written with valid JSON during training."""
+        data = [
+            {"label": "A", "x": "foo", "y": 1.0},
+            {"label": "B", "x": "bar", "y": 2.0},
+            {"label": "A", "x": "baz", "y": 3.0},
+            {"label": "B", "x": "qux", "y": 4.0},
+        ]
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            progress_path = f.name
+        try:
+            s = Snake(data, n_layers=2, bucket=3, vocal=False, progress_file=progress_path)
+            with open(progress_path) as f:
+                progress = json.load(f)
+            assert "layer" in progress
+            assert "n_layers" in progress
+            assert "elapsed_seconds" in progress
+            assert "eta_seconds" in progress
+            assert progress["n_layers"] == 2
+        finally:
+            os.unlink(progress_path)

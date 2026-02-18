@@ -5,7 +5,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-Proprietary-red.svg?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAxTDMgNXY2YzcgNCA4LjUgOC40IDkgMTIuOEM5LjUgMjAuNCA4IDE2IDggMTFWNmw0LTIuNUwxNiA2djVjMCA1LTEuNSA5LjQtNCAxa)](LICENSE)
-[![Version](https://img.shields.io/badge/v4.3.3-SAT_Bucketed-blueviolet.svg?logo=semanticrelease)](https://github.com/Monce-AI/algorithmeai-snake)
+[![Version](https://img.shields.io/badge/v4.4.2-SAT_Bucketed-blueviolet.svg?logo=semanticrelease)](https://github.com/Monce-AI/algorithmeai-snake)
 [![Build](https://img.shields.io/badge/Build-Passing-brightgreen.svg?logo=githubactions&logoColor=white)](#)
 
 [![Production](https://img.shields.io/badge/Production-Live_on_AWS-FF9900.svg?logo=amazonaws&logoColor=white)](https://snake.aws.monce.ai)
@@ -134,7 +134,7 @@ pred = model.get_prediction({"feature": "round"})  # returns {"color": "red", "s
 ## Constructor Reference
 
 ```python
-Snake(Knowledge, target_index=0, excluded_features_index=(), n_layers=5, bucket=250, noise=0.25, vocal=False, saved=False)
+Snake(Knowledge, target_index=0, excluded_features_index=(), n_layers=5, bucket=250, noise=0.25, vocal=False, saved=False, progress_file=None, workers=1)
 ```
 
 | Parameter | Type | Default | Description |
@@ -147,6 +147,8 @@ Snake(Knowledge, target_index=0, excluded_features_index=(), n_layers=5, bucket=
 | `noise` | float | `0.25` | Cross-bucket noise ratio for regularization |
 | `vocal` | bool | `False` | Print training progress |
 | `saved` | bool | `False` | Auto-save model after training (CSV flow only) |
+| `progress_file` | str/None | `None` | File path for JSON training progress updates |
+| `workers` | int | `1` | Parallel workers for layer construction (`>1` uses multiprocessing) |
 
 ## Prediction API
 
@@ -167,28 +169,36 @@ model.get_lookalikes(X)    # [[42, "versicolor", [0, 5]], [87, "versicolor", [3]
 model.get_augmented(X)     # {**X, "Lookalikes": ..., "Probability": ..., "Prediction": ..., "Audit": ...}
 ```
 
-**Audit output** (bucketed IF/ELIF/ELSE routing):
+**Audit output** (v4.4.2 — Routing AND + Lookalike AND):
 ```
-==================================================
+### BEGIN AUDIT ###
+  Prediction: versicolor
+  Layers: 5, Lookalikes: 47
+
+  LOOKALIKE SUMMARY
+  ================================================
+  versicolor           87.2% (41/47) █████████████████░░░
+    e.g. sample with petal_length 4.5
+  virginica            10.6% (5/47)  ██░░░░░░░░░░░░░░░░░░
+    e.g. sample with petal_length 5.0
+
+  PROBABILITY
+  ================================================
+  P(versicolor) = 87.2% █████████████████░░░
+  P(virginica) = 10.6% ██░░░░░░░░░░░░░░░░░░
+
+  ================================================
   LAYER 0
-==================================================
-  >>>   IF   "petal_width" > 0.8:
-  >>>     -> BUCKET 0 (78 members)
-        ELSE:
-            -> BUCKET 1 (42 members)
+  ================================================
 
-  Within BUCKET 0:
-    12 lookalikes found
-    P(versicolor)       =  83.3% ████████████████░░░░
-    P(virginica)        =  16.7% ███░░░░░░░░░░░░░░░░░
+  Routing AND (bucket 1/2, 78 members):
+    "petal_width" > 0.8
 
-==================================================
-  GLOBAL SUMMARY (5 layers)
-==================================================
-  Total lookalikes: 47
-  P(versicolor) = 87.2%
-  P(virginica) = 10.6%
-  P(setosa) = 2.1%
+  Lookalike AND (12 matches):
+    Lookalike #42 [versicolor]: 4.5
+      AND: "petal_length" <= 5.0 AND "petal_width" <= 1.7
+    ...
+
   >> PREDICTION: versicolor
 ### END AUDIT ###
 ```
@@ -203,16 +213,16 @@ model.to_json("model.json")
 model = Snake("model.json")
 ```
 
-**JSON structure (v4.3.3):**
+**JSON structure (v4.4.2):**
 ```json
 {
-  "version": "4.3.3",
+  "version": "4.4.0",
   "population": [...],
   "header": ["target", "f1", ...],
   "target": "target",
   "targets": [...],
   "datatypes": ["T", "N", ...],
-  "config": {"n_layers": 5, "bucket": 250, "noise": 0.25, "vocal": false},
+  "config": {"n_layers": 5, "bucket": 250, "noise": 0.25, "vocal": false, "workers": 1},
   "layers": [...],
   "log": "..."
 }
@@ -419,8 +429,11 @@ for row in batch:
 
 ```python
 audit = model.get_audit(X)
-# Multi-line string with per-layer bucket routing,
-# vote breakdown, probabilities, and final prediction.
+# Multi-line string with:
+#   - Lookalike summary with examples per class
+#   - Probability distribution
+#   - Per-layer: Routing AND + Lookalike AND explanations
+#   - Final prediction
 # Feed to an LLM for explanation generation.
 ```
 
@@ -499,21 +512,30 @@ Without Cython, Snake runs in pure Python with identical behavior. The Cython ex
 ## Testing
 
 ```bash
-pytest                                # all 151 tests
-pytest tests/test_snake.py            # input modes, save/load, augmented, vocal, dedup
+pytest                                # all 174 tests
+pytest tests/test_snake.py            # input modes, save/load, augmented, vocal, dedup, parallel training
 pytest tests/test_buckets.py          # bucket chain, noise, routing, audit, dedup
 pytest tests/test_core_algorithm.py   # oppose, construct_clause, construct_sat
 pytest tests/test_validation.py       # make_validation / pruning
 pytest tests/test_edge_cases.py       # errors, type detection, extreme params
 pytest tests/test_cli.py              # CLI train/predict/info via subprocess
 pytest tests/test_logging.py          # logging buffer, JSON persistence, banner
-pytest tests/test_stress.py           # stress tests
+pytest tests/test_audit.py            # Routing AND, Lookalike AND, audit end-to-end
+pytest tests/test_stress.py           # stress tests, batch equivalence
 pytest tests/test_ultimate_stress.py  # extended stress tests
 ```
 
-151 tests across 9 files. Tests use `tests/fixtures/sample.csv` (15 rows, 3 classes) with small `n_layers` (1–3) and `bucket` (3–5) for speed.
+174 tests across 10 files. Tests use `tests/fixtures/sample.csv` (15 rows, 3 classes) with small `n_layers` (1–3) and `bucket` (3–5) for speed.
 
 ## Changelog
+
+### v4.4.2 (Feb 2026)
+
+- **Perfected audit system**: Two clean AND statements per layer — Routing AND (explains bucket routing) and Lookalike AND (per-sample clause negation). Replaces the stub from v4.3.x
+- **Parallel training**: `workers=N` enables multiprocessing for layer construction. Each worker gets a unique RNG seed
+- **Progress tracking**: `progress_file` parameter writes JSON progress updates during training
+- **Cython batch acceleration**: `batch_get_lookalikes_fast` amortizes routing by grouping queries per bucket per layer
+- **174 tests**: Extended from 151 across 10 files (added audit tests, parallel training, batch equivalence)
 
 ### v4.3.3 (Feb 2026)
 
