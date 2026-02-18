@@ -5,7 +5,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-Proprietary-red.svg?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAxTDMgNXY2YzcgNCA4LjUgOC40IDkgMTIuOEM5LjUgMjAuNCA4IDE2IDggMTFWNmw0LTIuNUwxNiA2djVjMCA1LTEuNSA5LjQtNCAxa)](LICENSE)
-[![Version](https://img.shields.io/badge/v4.4.3-SAT_Bucketed-blueviolet.svg?logo=semanticrelease)](https://github.com/Monce-AI/algorithmeai-snake)
+[![Version](https://img.shields.io/badge/v4.4.4-SAT_Bucketed-blueviolet.svg?logo=semanticrelease)](https://github.com/Monce-AI/algorithmeai-snake)
 [![Build](https://img.shields.io/badge/Build-Passing-brightgreen.svg?logo=githubactions&logoColor=white)](#)
 
 [![Production](https://img.shields.io/badge/Production-Live_on_AWS-FF9900.svg?logo=amazonaws&logoColor=white)](https://snake.aws.monce.ai)
@@ -169,7 +169,7 @@ model.get_lookalikes(X)    # [[42, "versicolor", [0, 5]], [87, "versicolor", [3]
 model.get_augmented(X)     # {**X, "Lookalikes": ..., "Probability": ..., "Prediction": ..., "Audit": ...}
 ```
 
-**Audit output** (v4.4.3 — Routing AND + Lookalike AND):
+**Audit output** (v4.4.4 — Routing AND + Lookalike AND):
 ```
 ### BEGIN AUDIT ###
   Prediction: versicolor
@@ -213,7 +213,7 @@ model.to_json("model.json")
 model = Snake("model.json")
 ```
 
-**JSON structure (v4.4.3):**
+**JSON structure (v4.4.4):**
 ```json
 {
   "version": "4.4.0",
@@ -615,14 +615,15 @@ pytest tests/test_ultimate_stress.py  # extended stress tests
 pytest tests/test_meta.py             # Meta error classifier
 ```
 
-192 tests across 11 files. Tests use `tests/fixtures/sample.csv` (15 rows, 3 classes) with small `n_layers` (1–3) and `bucket` (3–5) for speed.
+194 tests across 11 files. Tests use `tests/fixtures/sample.csv` (15 rows, 3 classes) with small `n_layers` (1–3) and `bucket` (3–5) for speed.
 
 ## Changelog
 
-### v4.4.3 (Feb 2026)
+### v4.4.4 (Feb 2026)
 
-- **Meta error classifier**: New `Meta` class that learns WHERE a base Snake model fails. Cross-validated error labeling (binary: TP/TN/FP/FN/NS, multiclass: R1-R5/W/NS), trains an error-type Snake classifier, supports save/load and CSV export
-- **192 tests**: Extended from 174 across 11 files (added 18 Meta tests)
+- **Meta target leak fix**: The error model no longer sees the original target column as a feature. Previously, the target (e.g. `Survived`) leaked into the error model's training data — the model learned trivial patterns like `Survived=1 → TP` that were unavailable at inference time, causing it to collapse to majority-class (TN) predictions. With the fix, the error model learns from real features only, enabling meaningful flip signal across all 4 sources
+- **Meta error classifier**: `Meta` class that learns WHERE a base Snake model fails. Cross-validated error labeling (binary: TP/TN/FP/FN/NS, multiclass: R1-R5/W/NS), trains an error-type Snake classifier, supports save/load and CSV export
+- **194 tests**: Extended to 194 across 11 files (added 2 target-leak regression tests)
 
 ### v4.4.2 (Feb 2026)
 

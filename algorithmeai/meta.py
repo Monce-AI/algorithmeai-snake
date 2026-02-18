@@ -23,6 +23,7 @@ class Meta:
     def __init__(self, Knowledge, target_index=0, excluded_features_index=(),
                  n_layers=5, bucket=250, noise=0.25, workers=1,
                  n_splits=25, n_runs=2, split_ratio=0.8,
+                 agreement_threshold=0.9,
                  error_layers=7, error_bucket=50,
                  vocal=False):
         self.n_layers = n_layers
@@ -32,6 +33,7 @@ class Meta:
         self.n_splits = n_splits
         self.n_runs = n_runs
         self.split_ratio = split_ratio
+        self.agreement_threshold = agreement_threshold
         self.error_layers = error_layers
         self.error_bucket = error_bucket
         self.vocal = vocal
@@ -130,7 +132,7 @@ class Meta:
         self.error_model.to_json(error_model_path)
 
         meta_data = {
-            "version": "4.4.3",
+            "version": "4.4.4",
             "meta_version": 1,
             "target": self.target,
             "is_binary": self.is_binary,
@@ -147,6 +149,7 @@ class Meta:
                 "n_splits": self.n_splits,
                 "n_runs": self.n_runs,
                 "split_ratio": self.split_ratio,
+                "agreement_threshold": self.agreement_threshold,
                 "error_layers": self.error_layers,
                 "error_bucket": self.error_bucket,
             },
@@ -292,15 +295,18 @@ class Meta:
                 eta = f"{mins}m{secs:02d}s" if mins else f"{secs}s"
                 print(f"    split {s + 1}/{self.n_splits} ({self._splits_done}/{self._total_splits} total, ETA {eta})")
 
-        # Majority vote per sample
+        # Majority vote per sample with agreement threshold
         run_labels = []
         for sample_labels in labels_per_sample:
             if not sample_labels:
                 run_labels.append("NS")
                 continue
             counter = Counter(sample_labels)
-            best, _ = counter.most_common(1)[0]
-            run_labels.append(best)
+            best, best_count = counter.most_common(1)[0]
+            if best_count / len(sample_labels) >= self.agreement_threshold:
+                run_labels.append(best)
+            else:
+                run_labels.append("NS")
         return run_labels
 
     def _generate_labels(self):
@@ -339,7 +345,10 @@ class Meta:
 
     def _train_error_model(self):
         """Train Snake on population + error_type labels."""
-        training_data = self.to_list()
+        training_data = [
+            {k: v for k, v in row.items() if k != self.target}
+            for row in self.to_list()
+        ]
         model = Snake(training_data, target_index="error_type",
                       n_layers=self.error_layers, bucket=self.error_bucket,
                       noise=self.noise, vocal=False, workers=self.workers)
@@ -373,6 +382,7 @@ class Meta:
         self.n_splits = cfg.get("n_splits", self.n_splits)
         self.n_runs = cfg.get("n_runs", self.n_runs)
         self.split_ratio = cfg.get("split_ratio", self.split_ratio)
+        self.agreement_threshold = cfg.get("agreement_threshold", self.agreement_threshold)
         self.error_layers = cfg.get("error_layers", self.error_layers)
         self.error_bucket = cfg.get("error_bucket", self.error_bucket)
 

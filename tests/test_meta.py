@@ -170,7 +170,7 @@ class TestJSONPathError:
     def test_non_meta_json_raises(self):
         """Loading a plain Snake JSON via Meta should raise ValueError."""
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w") as f:
-            json.dump({"version": "4.4.3", "not_meta": True}, f)
+            json.dump({"version": "4.4.4", "not_meta": True}, f)
             path = f.name
         try:
             with pytest.raises(ValueError, match="not a valid Meta JSON"):
@@ -200,3 +200,21 @@ class TestRepr:
         m = Meta(MULTICLASS_DATA, target_index="label", **FAST)
         r = repr(m)
         assert "multiclass" in r
+
+
+class TestErrorModelNoTargetLeak:
+    def test_target_not_in_error_model_features(self):
+        """Error model must not use the original target as a feature (data leak)."""
+        m = Meta(BINARY_DATA, target_index="survived", **FAST)
+        em_features = [col for col, dt in zip(m.error_model.header, m.error_model.datatypes)
+                       if col != m.error_model.target]
+        assert m.target not in em_features, (
+            f"Original target '{m.target}' leaked into error model features"
+        )
+
+    def test_target_not_in_error_model_multiclass(self):
+        """Same leak check for multiclass."""
+        m = Meta(MULTICLASS_DATA, target_index="label", **FAST)
+        em_features = [col for col in m.error_model.header
+                       if col != m.error_model.target]
+        assert m.target not in em_features

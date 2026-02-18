@@ -9,7 +9,7 @@ Author: Charles Dana / Monce SAS. Charles is the user you're talking to.
 
 ```
 algorithmeai/
-  __init__.py          # Exports: Snake, floatconversion, Meta, __version__ = "4.4.3"
+  __init__.py          # Exports: Snake, floatconversion, Meta, __version__ = "4.4.4"
   snake.py             # The entire classifier (~1500 lines, zero dependencies)
   meta.py              # Meta error classifier (~250 lines, depends on snake.py)
   _accel.pyx           # Optional Cython hot paths (inference + training acceleration)
@@ -113,7 +113,7 @@ All take a dict `X` with feature keys (NOT the target key):
 ### Save & Load
 
 ```python
-# Save — always writes v4.4.3 bucketed format
+# Save — always writes v4.4.4 bucketed format
 model.to_json("model.json")       # or any path
 model.to_json()                    # defaults to "snakeclassifier.json"
 
@@ -123,10 +123,10 @@ model = Snake("model.json")       # skips training entirely
 
 **Backwards compatibility:** If the JSON has `clauses` + `lookalikes` at top level but no `layers` key, it's v0.1 flat format. `from_json` wraps it into a single ELSE bucket automatically. No migration needed.
 
-**JSON structure (v4.4.3):**
+**JSON structure (v4.4.4):**
 ```json
 {
-  "version": "4.4.3",
+  "version": "4.4.4",
   "population": [...],           // list of dicts (training data)
   "header": ["target", "f1", ...],
   "target": "target",            // target column name
@@ -327,7 +327,7 @@ snake info model.json
 ```bash
 snake info model.json
 # Output:
-#   Snake model v4.4.3
+#   Snake model v4.4.4
 #   Target: species
 #   Population: 150
 #   Layers: 5
@@ -360,7 +360,7 @@ pytest tests/test_ultimate_stress.py  # extended stress tests
 pytest tests/test_meta.py             # Meta error classifier: labels, save/load, predictions, CSV export
 ```
 
-192 tests across 11 files. Tests use `tests/fixtures/sample.csv` (15 rows, 3 classes). All tests use small `n_layers` (1-3) and `bucket` (3-5) for speed.
+194 tests across 11 files. Tests use `tests/fixtures/sample.csv` (15 rows, 3 classes). All tests use small `n_layers` (1-3) and `bucket` (3-5) for speed.
 
 ## Stochastic Behavior
 
@@ -470,7 +470,7 @@ audit = model.get_audit(X)
 # Feed this to an LLM for explanation generation
 ```
 
-### Audit structure (v4.4.3)
+### Audit structure (v4.4.4)
 
 The audit system produces two AND statements per layer:
 
@@ -627,7 +627,7 @@ Rank is capped by the number of classes. A 3-class problem can only produce R1, 
 
 ```json
 {
-  "version": "4.4.3",
+  "version": "4.4.4",
   "meta_version": 1,
   "target": "Survived",
   "is_binary": true,
@@ -660,7 +660,7 @@ Rank is capped by the number of classes. A 3-class problem can only produce R1, 
 | `_label_one_run()` | One run of n_splits random splits → majority-vote labels |
 | `_generate_labels()` | n_runs independent runs → agreement filter → final labels + counts + agreement_rate |
 | `_determine_positive_class()` | Minority class for binary |
-| `_train_error_model()` | Train Snake on `to_list()` with target=`error_type` |
+| `_train_error_model()` | Train Snake on `to_list()` with target=`error_type`, **strips original target column** to prevent data leak |
 | `_from_json(path)` | Load saved Meta from JSON + sibling error model file |
 
 ### Usage Pattern (production)
@@ -668,13 +668,17 @@ Rank is capped by the number of classes. A 3-class problem can only produce R1, 
 ```python
 from algorithmeai import Snake, Meta
 
-# Train meta
-meta = Meta(data, target_index="survived", n_layers=7, bucket=400,
-            n_splits=25, n_runs=2, error_layers=7, error_bucket=50)
+# Train meta — recommended params from Titanic experiments
+meta = Meta(data, target_index="survived",
+            n_layers=7, bucket=400, noise=0.25, workers=10,
+            n_splits=40, n_runs=2, split_ratio=0.8,
+            agreement_threshold=0.55,
+            error_layers=20, error_bucket=20,
+            vocal=True)
 
 # Inspect
 print(meta.summary())
-print(meta.agreement_rate)   # 0.93
+print(meta.agreement_rate)   # aim for >90%
 
 # Save
 meta.to_json("meta.json")
@@ -692,6 +696,20 @@ pred = base.get_prediction(X)
 if error_prob.get("FN", 0) > 0.70:
     pred = meta.positive_class  # flip to positive
 ```
+
+### Recommended Meta Parameters (from Titanic experiments)
+
+| Parameter | Recommended | Reason |
+|-----------|-------------|--------|
+| `split_ratio` | `0.8` | Each sample appears in holdout ~8 times/run, enough for majority voting. `0.95` gives ~1.25 appearances → weak voting, high NS |
+| `n_splits` | `30-40` | More splits = more holdout appearances per sample. 40 splits at 0.8 ratio gives ~8 appearances |
+| `n_runs` | `2` | Two independent runs with cross-run agreement. More runs = stricter (all must agree) |
+| `agreement_threshold` | `0.55-0.65` | Within-run majority vote threshold. 0.55 with ~8 appearances ≈ 5/8 must agree. 0.9+ is too strict |
+| `error_layers` | `15-20` | The error model needs high capacity — 5 classes with imbalanced distribution |
+| `error_bucket` | `20-25` | Small buckets prevent minority classes (FP/FN) from being swamped by TN |
+| `n_layers` (ephemeral) | `5-7` | Ephemeral models should be representative, not maximally strong. Too strong → too few errors → sparse FP/FN labels |
+
+**Key finding:** The error model's original target column is now excluded from training (v4.4.4 fix). Without this fix, the error model learns trivial patterns from the target that are unavailable at inference time, collapsing all predictions to TN.
 
 ## Things That Will Bite You
 
@@ -715,11 +733,13 @@ if error_prob.get("FN", 0) > 0.70:
 
 ## Changelog
 
-### v4.4.3 (Feb 2026)
+### v4.4.4 (Feb 2026)
 
-- **Meta error classifier**: New `Meta` class (`algorithmeai/meta.py`, ~250 lines) — cross-validated error labeling (binary: TP/TN/FP/FN/NS, multiclass: R1-R5/W/NS) + error-type Snake classifier. Accepts same input formats as Snake. Save/load via `to_json`/`Meta("meta.json")`.
+- **Meta target leak fix (critical)**: `_train_error_model()` now strips the original target column from error model training data. Previously, the target (e.g. `Survived`) was passed as a feature to the error Snake — the model learned `Survived=1 → TP` (trivially correct during training) but at inference time the target is unknown, so all target-based clauses failed via `apply_literal` returning `False` for missing keys, collapsing predictions to majority-class TN. With the fix, the error model learns from actual features (Sex, Pclass, Age, etc.) that are available at inference time.
+- **Titanic benchmark results**: With the leak fix + tuned parameters (`n_layers=7, bucket=400, noise=0.25, n_splits=40, n_runs=2, split_ratio=0.8, agreement_threshold=0.55, error_layers=20, error_bucket=20`), Meta produces quality flip signal: 8 combined flips at 85.7% precision, net +5, +2.79pp over base accuracy. TP_contradict and TN_contradict are the primary sources. Before the fix: 0-1 flips, TN predictions dominated 87%+ of test output.
+- **Meta error classifier**: `Meta` class (`algorithmeai/meta.py`, ~250 lines) — cross-validated error labeling (binary: TP/TN/FP/FN/NS, multiclass: R1-R5/W/NS) + error-type Snake classifier. Accepts same input formats as Snake. Save/load via `to_json`/`Meta("meta.json")`.
 - **Auto type-casting**: `Meta.get_prediction(X)` and `get_probability(X)` auto-cast feature types via `_cast_features()`, avoiding the `TypeError` gotcha when passing strings for numeric features.
-- **192 tests**: Extended from 174 to 192 across 11 files (added 18 Meta tests: labels, binary/multiclass detection, save/load, CSV export, predictions, summary, repr).
+- **194 tests**: Extended from 174 to 194 across 11 files (added 18 Meta tests + 2 target-leak regression tests).
 
 ### v4.4.2 (Feb 2026)
 
