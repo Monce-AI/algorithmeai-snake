@@ -9,8 +9,9 @@ Author: Charles Dana / Monce SAS. Charles is the user you're talking to.
 
 ```
 algorithmeai/
-  __init__.py          # Exports: Snake, floatconversion, __version__ = "4.4.2"
+  __init__.py          # Exports: Snake, floatconversion, Meta, __version__ = "4.4.3"
   snake.py             # The entire classifier (~1500 lines, zero dependencies)
+  meta.py              # Meta error classifier (~250 lines, depends on snake.py)
   _accel.pyx           # Optional Cython hot paths (inference + training acceleration)
   cli.py               # CLI: snake train / predict / info
   __main__.py          # Enables `python -m algorithmeai` for CLI
@@ -25,6 +26,7 @@ tests/
   test_audit.py        # Routing AND, Lookalike AND, plain text assertions, audit end-to-end
   test_stress.py       # Stress tests, batch equivalence
   test_ultimate_stress.py  # Extended stress tests
+  test_meta.py         # Meta error classifier: labels, save/load, predictions, CSV export
   fixtures/sample.csv  # 15-row toy dataset (color, size, shape -> label A/B/C)
 benchmarks.py          # Benchmark script (sklearn + Spaceship Titanic)
 pyproject.toml         # Build config, hatchling, proprietary license
@@ -37,7 +39,7 @@ LICENSE                # Proprietary
 ### The Constructor — 5 Input Modes
 
 ```python
-from algorithmeai import Snake
+from algorithmeai import Snake, Meta
 ```
 
 Snake's constructor accepts ONE positional argument `Knowledge` and dispatches based on type:
@@ -111,7 +113,7 @@ All take a dict `X` with feature keys (NOT the target key):
 ### Save & Load
 
 ```python
-# Save — always writes v4.4.2 bucketed format
+# Save — always writes v4.4.3 bucketed format
 model.to_json("model.json")       # or any path
 model.to_json()                    # defaults to "snakeclassifier.json"
 
@@ -121,10 +123,10 @@ model = Snake("model.json")       # skips training entirely
 
 **Backwards compatibility:** If the JSON has `clauses` + `lookalikes` at top level but no `layers` key, it's v0.1 flat format. `from_json` wraps it into a single ELSE bucket automatically. No migration needed.
 
-**JSON structure (v4.4.2):**
+**JSON structure (v4.4.3):**
 ```json
 {
-  "version": "4.4.2",
+  "version": "4.4.3",
   "population": [...],           // list of dicts (training data)
   "header": ["target", "f1", ...],
   "target": "target",            // target column name
@@ -325,7 +327,7 @@ snake info model.json
 ```bash
 snake info model.json
 # Output:
-#   Snake model v4.4.2
+#   Snake model v4.4.3
 #   Target: species
 #   Population: 150
 #   Layers: 5
@@ -344,7 +346,7 @@ snake info model.json
 ## Testing
 
 ```bash
-pytest                                # runs all 174 tests
+pytest                                # runs all 192 tests
 pytest tests/test_snake.py            # input modes, save/load, augmented, vocal, dedup, parallel training
 pytest tests/test_buckets.py          # bucket chain, noise, routing, audit, dedup
 pytest tests/test_core_algorithm.py   # oppose, construct_clause, construct_sat
@@ -355,9 +357,10 @@ pytest tests/test_logging.py          # logging buffer, JSON persistence, banner
 pytest tests/test_audit.py            # Routing AND, Lookalike AND, plain text assertions, audit end-to-end
 pytest tests/test_stress.py           # stress tests, batch equivalence
 pytest tests/test_ultimate_stress.py  # extended stress tests
+pytest tests/test_meta.py             # Meta error classifier: labels, save/load, predictions, CSV export
 ```
 
-174 tests across 10 files. Tests use `tests/fixtures/sample.csv` (15 rows, 3 classes). All tests use small `n_layers` (1-3) and `bucket` (3-5) for speed.
+192 tests across 11 files. Tests use `tests/fixtures/sample.csv` (15 rows, 3 classes). All tests use small `n_layers` (1-3) and `bucket` (3-5) for speed.
 
 ## Stochastic Behavior
 
@@ -467,7 +470,7 @@ audit = model.get_audit(X)
 # Feed this to an LLM for explanation generation
 ```
 
-### Audit structure (v4.4.2)
+### Audit structure (v4.4.3)
 
 The audit system produces two AND statements per layer:
 
@@ -509,6 +512,187 @@ The audit system produces two AND statements per layer:
 ### END AUDIT ###
 ```
 
+## Meta Error Classifier
+
+Meta learns WHERE a base Snake model fails by cross-validated error labeling. Lives in `algorithmeai/meta.py`.
+
+### How Meta Works
+
+```
+Input (CSV / list[dict] / DataFrame)
+  │
+  ▼
+Probe Snake (1-layer, instant) → population + target name + type_map
+  │
+  ▼
+Detect binary (2 classes) vs multiclass (3+)
+  │
+  ▼
+┌─── Run 1 ────────────────────────────────┐
+│  For each of n_splits random 80/20:      │
+│    Train ephemeral Snake on 80%          │
+│    Batch predict 20%                     │
+│    Binary:     TP / TN / FP / FN         │
+│    Multiclass: R1-R5 / W (rank-based)   │
+│  Majority vote per sample                │
+└──────────────────────────────────────────┘
+           ... repeat n_runs times ...
+  │
+  ▼
+Agreement filter: all runs agree → keep label, else → NS
+  │
+  ▼
+Train error_model: Snake(augmented_data, target="error_type",
+                         n_layers=error_layers, bucket=error_bucket)
+  │
+  ▼
+Meta ready
+```
+
+### Constructor Signature
+
+```python
+Meta(Knowledge, target_index=0, excluded_features_index=(),
+     n_layers=5, bucket=250, noise=0.25, workers=1,
+     n_splits=25, n_runs=2, split_ratio=0.8,
+     error_layers=7, error_bucket=50,
+     vocal=False)
+```
+
+- `Knowledge` through `workers`: params for ephemeral split models (same dispatch as Snake: CSV, list[dict], DataFrame, etc.)
+- `n_splits`, `n_runs`, `split_ratio`: labeling config
+- `error_layers`, `error_bucket`: params for the internal error classifier Snake
+- `.json` path input: loads a saved Meta (skips labeling), like `Snake("model.json")`
+
+### Stored Attributes
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `population` | `list[dict]` | Original training data (from probe Snake) |
+| `target` | `str` | Original target column name |
+| `labels` | `list[str]` | Error labels parallel to population |
+| `label_counts` | `Counter` | Distribution of labels |
+| `is_binary` | `bool` | True if exactly 2 unique target values |
+| `positive_class` | value | Minority class (binary only), `None` for multiclass |
+| `agreement_rate` | `float` | Fraction of samples where runs agreed (excluding NS) |
+| `error_model` | `Snake` | Trained error classifier |
+
+### Public Methods
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `get_prediction(X)` | `str` | Predict error type for a feature dict X (auto-casts types) |
+| `get_probability(X)` | `dict` | Error type probabilities (auto-casts types) |
+| `to_list()` | `list[dict]` | Population with `error_type` column added |
+| `to_csv(path)` | `None` | Write augmented population to CSV |
+| `to_json(path)` | `None` | Save Meta metadata + error model (two files) |
+| `summary()` | `str` | Human-readable label distribution |
+| `__repr__` | `str` | `Meta(binary, 891 samples, 5 labels)` |
+
+**IMPORTANT:** `get_prediction(X)` and `get_probability(X)` auto-cast feature types via `_cast_features()` before delegating to the error model. This avoids the `TypeError` gotcha when passing strings for numeric features. The original Snake `get_prediction` does NOT do this — Meta is stricter about user ergonomics.
+
+### Label Schemes
+
+**Binary (exactly 2 unique targets) — 5 classes:**
+
+| Label | Meaning |
+|-------|---------|
+| **TP** | Predicted positive, actual positive |
+| **TN** | Predicted negative, actual negative |
+| **FP** | Predicted positive, actual negative |
+| **FN** | Predicted negative, actual positive |
+| **NS** | Runs disagree (not stable) |
+
+Positive class = minority class (by count). Tiebreaker = first in sorted order.
+
+**Multiclass (3+ unique targets) — up to 7 classes (rank-based):**
+
+| Label | Meaning |
+|-------|---------|
+| **R1** | Correct class was top prediction |
+| **R2** | Correct class was 2nd highest probability |
+| **R3** | Correct class was 3rd |
+| **R4** | Correct class was 4th |
+| **R5** | Correct class was 5th |
+| **W** | Correct class not in top 5 |
+| **NS** | Runs disagree |
+
+Rank is capped by the number of classes. A 3-class problem can only produce R1, R2, R3, and NS (never R4, R5, or W).
+
+### Save & Load (JSON)
+
+`to_json(path)` writes **two files**:
+- `path` — Meta metadata (labels, config, population, agreement_rate, etc.)
+- `path` with `_error_model.json` suffix — the error_model Snake serialized via `Snake.to_json()`
+
+```json
+{
+  "version": "4.4.3",
+  "meta_version": 1,
+  "target": "Survived",
+  "is_binary": true,
+  "positive_class": 1,
+  "labels": ["TN", "TP", "FN", ...],
+  "label_counts": {"TN": 313, "TP": 152, ...},
+  "agreement_rate": 0.93,
+  "population": [...],
+  "config": {
+    "n_layers": 7, "bucket": 400, "noise": 0.25, "workers": 1,
+    "n_splits": 25, "n_runs": 2, "split_ratio": 0.8,
+    "error_layers": 7, "error_bucket": 50
+  },
+  "error_model": "meta_error_model.json"
+}
+```
+
+`Meta("meta.json")` / `_from_json(path)` reads both files and restores the full Meta object without re-running the labeling pipeline. Loading a non-Meta JSON (e.g. a regular Snake model) raises `ValueError("... is not a valid Meta JSON file")`.
+
+### Internal Methods
+
+| Method | Description |
+|--------|-------------|
+| `_normalize_knowledge(Knowledge, target_index, excluded)` | Train 1-layer probe Snake to convert any input to list[dict] + target name + type_map |
+| `_build_type_map(model)` | Extract `{feature: datatype}` from Snake model |
+| `_convert_features(row, type_map)` | Strip target, cast types for prediction (used during labeling) |
+| `_cast_features(X)` | Cast feature types to match error model's expectations (used in get_prediction/get_probability) |
+| `_label_binary(pred, actual)` | → TP/TN/FP/FN |
+| `_label_multiclass(prob_dict, actual)` | → R1-R5/W (rank of correct class in probability ranking) |
+| `_label_one_run()` | One run of n_splits random splits → majority-vote labels |
+| `_generate_labels()` | n_runs independent runs → agreement filter → final labels + counts + agreement_rate |
+| `_determine_positive_class()` | Minority class for binary |
+| `_train_error_model()` | Train Snake on `to_list()` with target=`error_type` |
+| `_from_json(path)` | Load saved Meta from JSON + sibling error model file |
+
+### Usage Pattern (production)
+
+```python
+from algorithmeai import Snake, Meta
+
+# Train meta
+meta = Meta(data, target_index="survived", n_layers=7, bucket=400,
+            n_splits=25, n_runs=2, error_layers=7, error_bucket=50)
+
+# Inspect
+print(meta.summary())
+print(meta.agreement_rate)   # 0.93
+
+# Save
+meta.to_json("meta.json")
+
+# Later: load without retraining
+meta = Meta("meta.json")
+
+# Predict error type
+error = meta.get_prediction(X)       # "FN"
+error_prob = meta.get_probability(X)  # {"TP": 0.1, "FN": 0.6, ...}
+
+# Targeted flip: if high-confidence FN, override base prediction
+base = Snake("model.json")
+pred = base.get_prediction(X)
+if error_prob.get("FN", 0) > 0.70:
+    pred = meta.positive_class  # flip to positive
+```
+
 ## Things That Will Bite You
 
 1. **The banner prints to stdout with `vocal=True` only.** Set `vocal=False` to suppress.
@@ -530,6 +714,12 @@ The audit system produces two AND statements per layer:
 9. **Binary True/False targets are stored as int 0/1.** As of v4.3.2+, `"True"`/`"False"` strings are correctly converted in both CSV and list[dict] flows. Compare predictions against `0`/`1` (int), not `"True"`/`"False"` (str).
 
 ## Changelog
+
+### v4.4.3 (Feb 2026)
+
+- **Meta error classifier**: New `Meta` class (`algorithmeai/meta.py`, ~250 lines) — cross-validated error labeling (binary: TP/TN/FP/FN/NS, multiclass: R1-R5/W/NS) + error-type Snake classifier. Accepts same input formats as Snake. Save/load via `to_json`/`Meta("meta.json")`.
+- **Auto type-casting**: `Meta.get_prediction(X)` and `get_probability(X)` auto-cast feature types via `_cast_features()`, avoiding the `TypeError` gotcha when passing strings for numeric features.
+- **192 tests**: Extended from 174 to 192 across 11 files (added 18 Meta tests: labels, binary/multiclass detection, save/load, CSV export, predictions, summary, repr).
 
 ### v4.4.2 (Feb 2026)
 

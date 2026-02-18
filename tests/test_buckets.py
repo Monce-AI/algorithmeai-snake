@@ -128,7 +128,7 @@ class TestAudit:
 
     def test_log_contains_banner(self):
         s = Snake(SAMPLE_CSV, target_index=3, n_layers=1, bucket=5, vocal=False)
-        assert "v4.4.2" in s.log
+        assert "v4.4.3" in s.log
         assert "Charles Dana" in s.log
 
 

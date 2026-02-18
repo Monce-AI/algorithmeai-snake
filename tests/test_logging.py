@@ -39,12 +39,12 @@ class TestLogging:
         try:
             s.to_json(path)
             s2 = Snake(path)
-            assert "v4.4.2" in s2.log
+            assert "v4.4.3" in s2.log
         finally:
             os.unlink(path)
 
     def test_banner_in_log_always(self):
         """Banner with version and author should always be in log."""
         s = Snake(SAMPLE_CSV, target_index=3, n_layers=1, bucket=5, vocal=False)
-        assert "v4.4.2" in s.log
+        assert "v4.4.3" in s.log
         assert "Charles Dana" in s.log

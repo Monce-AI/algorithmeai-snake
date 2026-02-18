@@ -5,7 +5,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-Proprietary-red.svg?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAxTDMgNXY2YzcgNCA4LjUgOC40IDkgMTIuOEM5LjUgMjAuNCA4IDE2IDggMTFWNmw0LTIuNUwxNiA2djVjMCA1LTEuNSA5LjQtNCAxa)](LICENSE)
-[![Version](https://img.shields.io/badge/v4.4.2-SAT_Bucketed-blueviolet.svg?logo=semanticrelease)](https://github.com/Monce-AI/algorithmeai-snake)
+[![Version](https://img.shields.io/badge/v4.4.3-SAT_Bucketed-blueviolet.svg?logo=semanticrelease)](https://github.com/Monce-AI/algorithmeai-snake)
 [![Build](https://img.shields.io/badge/Build-Passing-brightgreen.svg?logo=githubactions&logoColor=white)](#)
 
 [![Production](https://img.shields.io/badge/Production-Live_on_AWS-FF9900.svg?logo=amazonaws&logoColor=white)](https://snake.aws.monce.ai)
@@ -169,7 +169,7 @@ model.get_lookalikes(X)    # [[42, "versicolor", [0, 5]], [87, "versicolor", [3]
 model.get_augmented(X)     # {**X, "Lookalikes": ..., "Probability": ..., "Prediction": ..., "Audit": ...}
 ```
 
-**Audit output** (v4.4.2 — Routing AND + Lookalike AND):
+**Audit output** (v4.4.3 — Routing AND + Lookalike AND):
 ```
 ### BEGIN AUDIT ###
   Prediction: versicolor
@@ -213,7 +213,7 @@ model.to_json("model.json")
 model = Snake("model.json")
 ```
 
-**JSON structure (v4.4.2):**
+**JSON structure (v4.4.3):**
 ```json
 {
   "version": "4.4.0",
@@ -437,6 +437,95 @@ audit = model.get_audit(X)
 # Feed to an LLM for explanation generation.
 ```
 
+## Meta Error Classifier
+
+Meta learns WHERE a base Snake model fails. It generates cross-validated error labels for every training sample, then trains an error-type Snake classifier on those labels.
+
+**Binary targets (2 classes):** Labels are `TP` / `TN` / `FP` / `FN` / `NS` (not stable).
+**Multiclass targets (3+ classes):** Labels are `R1`-`R5` (rank of correct class) / `W` (wrong, not in top 5) / `NS`.
+
+```python
+from algorithmeai import Meta
+
+# Train a meta error classifier
+meta = Meta(data, target_index="survived", n_layers=7, bucket=400,
+            n_splits=25, n_runs=2, error_layers=7, error_bucket=50)
+
+# Predict error type for a new sample
+meta.get_prediction({"pclass": 3, "sex": "male", "age": 22})   # "FN"
+meta.get_probability({"pclass": 3, "sex": "male", "age": 22})  # {"TP": 0.1, "TN": 0.2, "FP": 0.05, "FN": 0.6, "NS": 0.05}
+
+# Export augmented dataset
+meta.to_csv("train_extended.csv")   # Original data + error_type column
+
+# Save & reload
+meta.to_json("meta.json")           # Writes meta.json + meta_error_model.json
+meta = Meta("meta.json")            # Load without re-running labeling
+
+# Inspect
+print(meta.summary())               # Human-readable distribution
+print(meta.label_counts)            # Counter({'TN': 313, 'TP': 152, ...})
+print(meta.agreement_rate)          # 0.93
+```
+
+### Constructor
+
+```python
+Meta(Knowledge, target_index=0, excluded_features_index=(),
+     n_layers=5, bucket=250, noise=0.25, workers=1,
+     n_splits=25, n_runs=2, split_ratio=0.8,
+     error_layers=7, error_bucket=50,
+     vocal=False)
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `Knowledge` | str / list / DataFrame | — | Same input formats as Snake, or `.json` path to load saved Meta |
+| `target_index` | int / str | `0` | Target column (passed through to Snake) |
+| `n_layers` | int | `5` | Layers for ephemeral split models |
+| `bucket` | int | `250` | Bucket size for split models |
+| `noise` | float | `0.25` | Cross-bucket noise for split models |
+| `workers` | int | `1` | Parallel workers for split model training |
+| `n_splits` | int | `25` | Number of 80/20 splits per labeling run |
+| `n_runs` | int | `2` | Independent runs; agreement required, else NS |
+| `split_ratio` | float | `0.8` | Train/test split ratio |
+| `error_layers` | int | `7` | Layers for the error classifier |
+| `error_bucket` | int | `50` | Bucket size for the error classifier |
+| `vocal` | bool | `False` | Print progress |
+
+### Methods
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `get_prediction(X)` | str | Predicted error type (e.g. `"FN"`, `"R2"`) |
+| `get_probability(X)` | dict | `{error_type: probability}` for all labels |
+| `to_list()` | list[dict] | Population with `error_type` column added |
+| `to_csv(path)` | None | Write augmented population to CSV |
+| `to_json(path)` | None | Save Meta + error model (two JSON files) |
+| `summary()` | str | Human-readable label distribution |
+
+### Use Case: Targeted FN Flipping
+
+```python
+from algorithmeai import Snake, Meta
+
+# Train base model
+base = Snake(data, target_index="survived", n_layers=7, bucket=400)
+
+# Train meta error classifier
+meta = Meta(data, target_index="survived", n_layers=7, bucket=400,
+            n_splits=25, n_runs=2, error_layers=7, error_bucket=50)
+
+# At prediction time
+X = {"pclass": 3, "sex": "male", "age": 22}
+base_pred = base.get_prediction(X)
+error_prob = meta.get_probability(X)
+
+# If meta predicts FN with high confidence, flip the prediction
+if error_prob.get("FN", 0) > 0.70:
+    base_pred = positive_class  # Flip to positive
+```
+
 ## Gotchas
 
 1. **Target type must match at prediction time.** If training targets were `int` (e.g., `0`, `1`), predictions return `int`. If `str` (e.g., `"cat"`), predictions return `str`. Mixing types silently fails to match.
@@ -512,7 +601,7 @@ Without Cython, Snake runs in pure Python with identical behavior. The Cython ex
 ## Testing
 
 ```bash
-pytest                                # all 174 tests
+pytest                                # all 192 tests
 pytest tests/test_snake.py            # input modes, save/load, augmented, vocal, dedup, parallel training
 pytest tests/test_buckets.py          # bucket chain, noise, routing, audit, dedup
 pytest tests/test_core_algorithm.py   # oppose, construct_clause, construct_sat
@@ -523,11 +612,17 @@ pytest tests/test_logging.py          # logging buffer, JSON persistence, banner
 pytest tests/test_audit.py            # Routing AND, Lookalike AND, audit end-to-end
 pytest tests/test_stress.py           # stress tests, batch equivalence
 pytest tests/test_ultimate_stress.py  # extended stress tests
+pytest tests/test_meta.py             # Meta error classifier
 ```
 
-174 tests across 10 files. Tests use `tests/fixtures/sample.csv` (15 rows, 3 classes) with small `n_layers` (1–3) and `bucket` (3–5) for speed.
+192 tests across 11 files. Tests use `tests/fixtures/sample.csv` (15 rows, 3 classes) with small `n_layers` (1–3) and `bucket` (3–5) for speed.
 
 ## Changelog
+
+### v4.4.3 (Feb 2026)
+
+- **Meta error classifier**: New `Meta` class that learns WHERE a base Snake model fails. Cross-validated error labeling (binary: TP/TN/FP/FN/NS, multiclass: R1-R5/W/NS), trains an error-type Snake classifier, supports save/load and CSV export
+- **192 tests**: Extended from 174 across 11 files (added 18 Meta tests)
 
 ### v4.4.2 (Feb 2026)
 
