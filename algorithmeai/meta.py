@@ -199,8 +199,8 @@ class Meta:
         """Train a 1-layer probe Snake to normalize any input format."""
         probe = Snake(Knowledge, target_index=target_index,
                       excluded_features_index=excluded_features_index,
-                      n_layers=1, bucket=max(len(Knowledge) if not isinstance(Knowledge, str) else 9999, 250),
-                      noise=0, vocal=False, workers=1)
+                      n_layers=1, bucket=125,
+                      noise=0, vocal=self.vocal, workers=self.workers)
         population = list(probe.population)
         target = probe.target
         type_map = self._build_type_map(probe)
