@@ -170,7 +170,7 @@ class TestJSONPathError:
     def test_non_meta_json_raises(self):
         """Loading a plain Snake JSON via Meta should raise ValueError."""
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w") as f:
-            json.dump({"version": "4.4.4", "not_meta": True}, f)
+            json.dump({"version": "5.0.0", "not_meta": True}, f)
             path = f.name
         try:
             with pytest.raises(ValueError, match="not a valid Meta JSON"):

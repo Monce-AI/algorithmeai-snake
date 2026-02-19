@@ -5,7 +5,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-Proprietary-red.svg?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAxTDMgNXY2YzcgNCA4LjUgOC40IDkgMTIuOEM5LjUgMjAuNCA4IDE2IDggMTFWNmw0LTIuNUwxNiA2djVjMCA1LTEuNSA5LjQtNCAxa)](LICENSE)
-[![Version](https://img.shields.io/badge/v4.4.4-SAT_Bucketed-blueviolet.svg?logo=semanticrelease)](https://github.com/Monce-AI/algorithmeai-snake)
+[![Version](https://img.shields.io/badge/v5.0.0-SAT_Bucketed-blueviolet.svg?logo=semanticrelease)](https://github.com/Monce-AI/algorithmeai-snake)
 [![Build](https://img.shields.io/badge/Build-Passing-brightgreen.svg?logo=githubactions&logoColor=white)](#)
 
 [![Production](https://img.shields.io/badge/Production-Live_on_AWS-FF9900.svg?logo=amazonaws&logoColor=white)](https://snake.aws.monce.ai)
@@ -157,6 +157,7 @@ Snake(Knowledge, target_index=0, excluded_features_index=(), n_layers=5, bucket=
 | `get_prediction(X)` | value | Most probable class |
 | `get_probability(X)` | dict | `{class: probability}` for all classes |
 | `get_lookalikes(X)` | list | `[[index, class, condition], ...]` matched training samples |
+| `get_lookalikes_labeled(X)` | list | `[[index, class, condition, origin], ...]` with `"c"` (core) or `"n"` (noise) |
 | `get_augmented(X)` | dict | Input enriched with Lookalikes, Probability, Prediction, Audit |
 | `get_audit(X)` | str | Full human-readable reasoning trace |
 
@@ -169,7 +170,7 @@ model.get_lookalikes(X)    # [[42, "versicolor", [0, 5]], [87, "versicolor", [3]
 model.get_augmented(X)     # {**X, "Lookalikes": ..., "Probability": ..., "Prediction": ..., "Audit": ...}
 ```
 
-**Audit output** (v4.4.4 — Routing AND + Lookalike AND):
+**Audit output** (Routing AND + Lookalike AND):
 ```
 ### BEGIN AUDIT ###
   Prediction: versicolor
@@ -203,6 +204,38 @@ model.get_augmented(X)     # {**X, "Lookalikes": ..., "Probability": ..., "Predi
 ### END AUDIT ###
 ```
 
+## Lookalike Origins — Core vs Noise (v5.0.0)
+
+Each lookalike carries an origin label: **core `(c)`** = routed to the bucket by condition, **noise `(n)`** = randomly injected from the full population for regularization. This splits Snake's probability into independent signals.
+
+```python
+model = Snake(data, target_index="label", n_layers=77, bucket=150, noise=0.40, workers=10)
+
+# Labeled lookalikes — each entry: [global_idx, target_value, condition, origin]
+lookalikes = model.get_lookalikes_labeled(X)
+for idx, target, cond, origin in lookalikes:
+    print(f"#{idx} [{target}] ({origin})")  # e.g. "#42 [1] (c)", "#8 [0] (n)"
+
+# Weighted probability — trust core more than noise
+def weighted_prob(lookalikes, target_class, w_c=2, w_n=1):
+    total = sum(w_c if la[3] == "c" else w_n for la in lookalikes)
+    hits = sum((w_c if la[3] == "c" else w_n) for la in lookalikes if str(la[1]) == str(target_class))
+    return hits / total if total > 0 else 0.5
+
+# Split signals
+core_only = [la for la in lookalikes if la[3] == "c"]
+noise_only = [la for la in lookalikes if la[3] == "n"]
+```
+
+**Key finding:** The optimal weight ratio `(w_c, w_n)` depends on `n_layers`. At low layer counts, core dominates — noise is a distraction. At high layer counts, noise becomes a genuine complementary signal because full-population diversity compounds across stochastic layers.
+
+| Config | Core AUROC | Noise AUROC | Divergence winner | Best weighting |
+|--------|-----------|-------------|-------------------|----------------|
+| 7 layers, noise=0.25 | 0.895 | 0.768 | Core 81% | Pure core |
+| 77 layers, noise=0.40 | 0.891 | 0.877 | Noise 59% | Noise-heavy |
+
+Backwards compatible — old models without origins default to `"c"` for all lookalikes.
+
 ## Save & Load
 
 ```python
@@ -213,10 +246,10 @@ model.to_json("model.json")
 model = Snake("model.json")
 ```
 
-**JSON structure (v4.4.4):**
+**JSON structure (v5.0.0):**
 ```json
 {
-  "version": "4.4.0",
+  "version": "5.0.0",
   "population": [...],
   "header": ["target", "f1", ...],
   "target": "target",
@@ -439,91 +472,32 @@ audit = model.get_audit(X)
 
 ## Meta Error Classifier
 
-Meta learns WHERE a base Snake model fails. It generates cross-validated error labels for every training sample, then trains an error-type Snake classifier on those labels.
+Meta learns WHERE a base Snake model fails. Cross-validated error labeling + error-type Snake classifier.
 
-**Binary targets (2 classes):** Labels are `TP` / `TN` / `FP` / `FN` / `NS` (not stable).
-**Multiclass targets (3+ classes):** Labels are `R1`-`R5` (rank of correct class) / `W` (wrong, not in top 5) / `NS`.
-
-```python
-from algorithmeai import Meta
-
-# Train a meta error classifier
-meta = Meta(data, target_index="survived", n_layers=7, bucket=400,
-            n_splits=25, n_runs=2, error_layers=7, error_bucket=50)
-
-# Predict error type for a new sample
-meta.get_prediction({"pclass": 3, "sex": "male", "age": 22})   # "FN"
-meta.get_probability({"pclass": 3, "sex": "male", "age": 22})  # {"TP": 0.1, "TN": 0.2, "FP": 0.05, "FN": 0.6, "NS": 0.05}
-
-# Export augmented dataset
-meta.to_csv("train_extended.csv")   # Original data + error_type column
-
-# Save & reload
-meta.to_json("meta.json")           # Writes meta.json + meta_error_model.json
-meta = Meta("meta.json")            # Load without re-running labeling
-
-# Inspect
-print(meta.summary())               # Human-readable distribution
-print(meta.label_counts)            # Counter({'TN': 313, 'TP': 152, ...})
-print(meta.agreement_rate)          # 0.93
-```
-
-### Constructor
-
-```python
-Meta(Knowledge, target_index=0, excluded_features_index=(),
-     n_layers=5, bucket=250, noise=0.25, workers=1,
-     n_splits=25, n_runs=2, split_ratio=0.8,
-     error_layers=7, error_bucket=50,
-     vocal=False)
-```
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `Knowledge` | str / list / DataFrame | — | Same input formats as Snake, or `.json` path to load saved Meta |
-| `target_index` | int / str | `0` | Target column (passed through to Snake) |
-| `n_layers` | int | `5` | Layers for ephemeral split models |
-| `bucket` | int | `250` | Bucket size for split models |
-| `noise` | float | `0.25` | Cross-bucket noise for split models |
-| `workers` | int | `1` | Parallel workers for split model training |
-| `n_splits` | int | `25` | Number of 80/20 splits per labeling run |
-| `n_runs` | int | `2` | Independent runs; agreement required, else NS |
-| `split_ratio` | float | `0.8` | Train/test split ratio |
-| `error_layers` | int | `7` | Layers for the error classifier |
-| `error_bucket` | int | `50` | Bucket size for the error classifier |
-| `vocal` | bool | `False` | Print progress |
-
-### Methods
-
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `get_prediction(X)` | str | Predicted error type (e.g. `"FN"`, `"R2"`) |
-| `get_probability(X)` | dict | `{error_type: probability}` for all labels |
-| `to_list()` | list[dict] | Population with `error_type` column added |
-| `to_csv(path)` | None | Write augmented population to CSV |
-| `to_json(path)` | None | Save Meta + error model (two JSON files) |
-| `summary()` | str | Human-readable label distribution |
-
-### Use Case: Targeted FN Flipping
+- **Binary (2 classes):** TP / TN / FP / FN / NS (not stable)
+- **Multiclass (3+ classes):** R1-R5 (rank of correct class) / W (wrong) / NS
 
 ```python
 from algorithmeai import Snake, Meta
 
-# Train base model
-base = Snake(data, target_index="survived", n_layers=7, bucket=400)
-
-# Train meta error classifier
+# Train — expensive (n_runs x n_splits ephemeral models). Use workers=10.
 meta = Meta(data, target_index="survived", n_layers=7, bucket=400,
-            n_splits=25, n_runs=2, error_layers=7, error_bucket=50)
+            noise=0.25, workers=10, n_splits=40, n_runs=2,
+            error_layers=20, error_bucket=20)
 
-# At prediction time
-X = {"pclass": 3, "sex": "male", "age": 22}
+# Predict error type
+meta.get_prediction(X)    # "FN"
+meta.get_probability(X)   # {"TP": 0.1, "FN": 0.6, ...}
+meta.summary()            # label distribution
+
+# Save & reload (writes 2 files)
+meta.to_json("meta.json")
+meta = Meta("meta.json")
+
+# Targeted flip: if high-confidence FN, override base prediction
 base_pred = base.get_prediction(X)
-error_prob = meta.get_probability(X)
-
-# If meta predicts FN with high confidence, flip the prediction
-if error_prob.get("FN", 0) > 0.70:
-    base_pred = positive_class  # Flip to positive
+if meta.get_probability(X).get("FN", 0) > 0.70:
+    base_pred = meta.positive_class
 ```
 
 ## Gotchas
@@ -601,7 +575,7 @@ Without Cython, Snake runs in pure Python with identical behavior. The Cython ex
 ## Testing
 
 ```bash
-pytest                                # all 192 tests
+pytest                                # all 194 tests
 pytest tests/test_snake.py            # input modes, save/load, augmented, vocal, dedup, parallel training
 pytest tests/test_buckets.py          # bucket chain, noise, routing, audit, dedup
 pytest tests/test_core_algorithm.py   # oppose, construct_clause, construct_sat
@@ -619,11 +593,18 @@ pytest tests/test_meta.py             # Meta error classifier
 
 ## Changelog
 
+### v5.0.0 (Feb 2026)
+
+- **Lookalike origin labeling**: Every lookalike now carries `"c"` (core) or `"n"` (noise) origin. New `get_lookalikes_labeled(X)` method returns `[index, class, condition, origin]` per match. Enables weighted probability with `(w_c, w_n)` tuning
+- **Full-population noise**: Noise sourced from the entire population minus core (was: remaining minus core). Deep-chain buckets now access global diversity
+- **Origins in JSON**: Each bucket stores `"origins"` parallel to `"members"`. Backwards compatible — old models default to all-core
+- **Regime discovery**: Core vs noise signal quality depends on `n_layers`. Low layers = trust core. High layers = blend both
+
 ### v4.4.4 (Feb 2026)
 
-- **Meta target leak fix**: The error model no longer sees the original target column as a feature. Previously, the target (e.g. `Survived`) leaked into the error model's training data — the model learned trivial patterns like `Survived=1 → TP` that were unavailable at inference time, causing it to collapse to majority-class (TN) predictions. With the fix, the error model learns from real features only, enabling meaningful flip signal across all 4 sources
-- **Meta error classifier**: `Meta` class that learns WHERE a base Snake model fails. Cross-validated error labeling (binary: TP/TN/FP/FN/NS, multiclass: R1-R5/W/NS), trains an error-type Snake classifier, supports save/load and CSV export
-- **194 tests**: Extended to 194 across 11 files (added 2 target-leak regression tests)
+- **Meta target leak fix**: Error model no longer sees the original target column as a feature, fixing collapse to TN-majority
+- **Meta error classifier**: Cross-validated error labeling + error-type Snake classifier
+- **194 tests** across 11 files
 
 ### v4.4.2 (Feb 2026)
 

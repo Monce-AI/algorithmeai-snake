@@ -9,7 +9,7 @@ Author: Charles Dana / Monce SAS. Charles is the user you're talking to.
 
 ```
 algorithmeai/
-  __init__.py          # Exports: Snake, floatconversion, Meta, __version__ = "4.4.4"
+  __init__.py          # Exports: Snake, floatconversion, Meta, __version__ = "5.0.0"
   snake.py             # The entire classifier (~1500 lines, zero dependencies)
   meta.py              # Meta error classifier (~250 lines, depends on snake.py)
   _accel.pyx           # Optional Cython hot paths (inference + training acceleration)
@@ -105,6 +105,7 @@ All take a dict `X` with feature keys (NOT the target key):
 | `get_prediction(X)` | The target value with highest probability | If no lookalikes found, returns random class (uniform distribution) |
 | `get_probability(X)` | `{class: float}` dict, sums to 1.0 | If 0 lookalikes: uniform `1/n_classes` for each class |
 | `get_lookalikes(X)` | `[[global_idx, target_value, condition], ...]` | Deduped by population index across layers |
+| `get_lookalikes_labeled(X)` | `[[global_idx, target_value, condition, origin], ...]` | Same but with `"c"` (core) or `"n"` (noise) origin per lookalike |
 | `get_augmented(X)` | `{**X, "Lookalikes": ..., "Probability": ..., "Prediction": ..., "Audit": ...}` | Single pass — calls get_lookalikes once, derives all else |
 | `get_audit(X)` | Multi-line string with Routing AND + Lookalike AND per layer | Human-readable, good for RAG/LLM consumption |
 
@@ -113,7 +114,7 @@ All take a dict `X` with feature keys (NOT the target key):
 ### Save & Load
 
 ```python
-# Save — always writes v4.4.4 bucketed format
+# Save — always writes v5.0.0 bucketed format
 model.to_json("model.json")       # or any path
 model.to_json()                    # defaults to "snakeclassifier.json"
 
@@ -123,10 +124,10 @@ model = Snake("model.json")       # skips training entirely
 
 **Backwards compatibility:** If the JSON has `clauses` + `lookalikes` at top level but no `layers` key, it's v0.1 flat format. `from_json` wraps it into a single ELSE bucket automatically. No migration needed.
 
-**JSON structure (v4.4.4):**
+**JSON structure (v5.0.0):**
 ```json
 {
-  "version": "4.4.4",
+  "version": "5.0.0",
   "population": [...],           // list of dicts (training data)
   "header": ["target", "f1", ...],
   "target": "target",            // target column name
@@ -327,7 +328,7 @@ snake info model.json
 ```bash
 snake info model.json
 # Output:
-#   Snake model v4.4.4
+#   Snake model v5.0.0
 #   Target: species
 #   Population: 150
 #   Layers: 5
@@ -470,7 +471,30 @@ audit = model.get_audit(X)
 # Feed this to an LLM for explanation generation
 ```
 
-### Audit structure (v4.4.4)
+### Lookalike Origins — core (c) vs noise (n) (v5.0.0)
+
+Each lookalike carries an origin label: `"c"` (core — routed to bucket by condition) or `"n"` (noise — randomly injected from full population).
+
+**Training:** `build_bucket_chain` stores `"origins"` parallel to `"members"` in each bucket. Noise is sampled from the **full population** minus core (not just remaining — changed in v5.0.0 for true global regularization). ELSE bucket is always all-core.
+
+**Inference:** `get_lookalikes_labeled(X)` returns `[global_idx, target_value, condition, origin]` per lookalike. Backwards compatible — old models without `"origins"` default to `"c"`.
+
+**Weighted probability:** Core and noise carry different signal quality. Weight them with integer params `(w_c, w_n)`:
+
+```python
+lookalikes = model.get_lookalikes_labeled(X)
+
+def weighted_prob(lookalikes, target_class, w_c=2, w_n=1):
+    total = sum(w_c if la[3] == "c" else w_n for la in lookalikes)
+    hits = sum((w_c if la[3] == "c" else w_n) for la in lookalikes if str(la[1]) == str(target_class))
+    return hits / total if total > 0 else 0.5
+```
+
+**Regime behavior (Titanic benchmark):** At low layers (7), core dominates (AUROC 0.895 vs noise 0.768, core wins 81% of divergence cases). At high layers (77) with more noise (0.40), noise converges toward core quality (AUROC 0.877 vs 0.891) and actually wins 59% of divergence cases. Optimal `(w_c, w_n)` is a function of `n_layers` — low layers favor pure core, high layers favor blending.
+
+**JSON persistence:** Origins are automatically serialized/deserialized as part of the bucket dict in `self.layers`. No extra code needed.
+
+### Audit structure (v5.0.0)
 
 The audit system produces two AND statements per layer:
 
@@ -514,202 +538,75 @@ The audit system produces two AND statements per layer:
 
 ## Meta Error Classifier
 
-Meta learns WHERE a base Snake model fails by cross-validated error labeling. Lives in `algorithmeai/meta.py`.
+Meta learns WHERE a base Snake model fails by cross-validated error labeling. Lives in `algorithmeai/meta.py` (~250 lines).
 
-### How Meta Works
+### Quick Reference
 
-```
-Input (CSV / list[dict] / DataFrame)
-  │
-  ▼
-Probe Snake (1-layer, instant) → population + target name + type_map
-  │
-  ▼
-Detect binary (2 classes) vs multiclass (3+)
-  │
-  ▼
-┌─── Run 1 ────────────────────────────────┐
-│  For each of n_splits random 80/20:      │
-│    Train ephemeral Snake on 80%          │
-│    Batch predict 20%                     │
-│    Binary:     TP / TN / FP / FN         │
-│    Multiclass: R1-R5 / W (rank-based)   │
-│  Majority vote per sample                │
-└──────────────────────────────────────────┘
-           ... repeat n_runs times ...
-  │
-  ▼
-Agreement filter: all runs agree → keep label, else → NS
-  │
-  ▼
-Train error_model: Snake(augmented_data, target="error_type",
-                         n_layers=error_layers, bucket=error_bucket)
-  │
-  ▼
-Meta ready
+```python
+from algorithmeai import Meta
+
+# Train — expensive (n_runs x n_splits ephemeral models). Use workers=10.
+meta = Meta(data, target_index="survived",
+            n_layers=7, bucket=400, noise=0.25, workers=10,
+            n_splits=40, n_runs=2, split_ratio=0.8,
+            agreement_threshold=0.55,
+            error_layers=20, error_bucket=20, vocal=True)
+
+# Predict error type
+meta.get_prediction(X)    # "FN"
+meta.get_probability(X)   # {"TP": 0.1, "FN": 0.6, ...}
+meta.summary()            # label distribution
+
+# Save / load (writes 2 files: meta.json + meta_error_model.json)
+meta.to_json("meta.json")
+meta = Meta("meta.json")
 ```
 
-### Constructor Signature
+### Labels
+
+- **Binary (2 classes):** TP, TN, FP, FN, NS (not stable). Positive class = minority.
+- **Multiclass (3+ classes):** R1-R5 (rank of correct class), W (wrong), NS.
+
+### Constructor
 
 ```python
 Meta(Knowledge, target_index=0, excluded_features_index=(),
      n_layers=5, bucket=250, noise=0.25, workers=1,
      n_splits=25, n_runs=2, split_ratio=0.8,
-     error_layers=7, error_bucket=50,
-     vocal=False)
+     error_layers=7, error_bucket=50, vocal=False)
 ```
 
-- `Knowledge` through `workers`: params for ephemeral split models (same dispatch as Snake: CSV, list[dict], DataFrame, etc.)
-- `n_splits`, `n_runs`, `split_ratio`: labeling config
-- `error_layers`, `error_bucket`: params for the internal error classifier Snake
-- `.json` path input: loads a saved Meta (skips labeling), like `Snake("model.json")`
+`Knowledge` through `workers` = ephemeral split model params. `n_splits`, `n_runs`, `split_ratio` = labeling config. `error_layers`, `error_bucket` = error classifier params.
 
-### Stored Attributes
+### Key attributes
 
-| Attribute | Type | Description |
-|-----------|------|-------------|
-| `population` | `list[dict]` | Original training data (from probe Snake) |
-| `target` | `str` | Original target column name |
-| `labels` | `list[str]` | Error labels parallel to population |
-| `label_counts` | `Counter` | Distribution of labels |
-| `is_binary` | `bool` | True if exactly 2 unique target values |
-| `positive_class` | value | Minority class (binary only), `None` for multiclass |
-| `agreement_rate` | `float` | Fraction of samples where runs agreed (excluding NS) |
-| `error_model` | `Snake` | Trained error classifier |
+`population`, `target`, `labels` (parallel to population), `label_counts` (Counter), `is_binary`, `positive_class` (minority class), `agreement_rate`, `error_model` (Snake instance).
 
-### Public Methods
+### Methods
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `get_prediction(X)` | `str` | Predict error type for a feature dict X (auto-casts types) |
-| `get_probability(X)` | `dict` | Error type probabilities (auto-casts types) |
-| `to_list()` | `list[dict]` | Population with `error_type` column added |
+| `get_prediction(X)` | `str` | Error type — auto-casts feature types |
+| `get_probability(X)` | `dict` | Error type probabilities — auto-casts types |
+| `to_list()` | `list[dict]` | Population with `error_type` column |
 | `to_csv(path)` | `None` | Write augmented population to CSV |
-| `to_json(path)` | `None` | Save Meta metadata + error model (two files) |
-| `summary()` | `str` | Human-readable label distribution |
-| `__repr__` | `str` | `Meta(binary, 891 samples, 5 labels)` |
+| `to_json(path)` | `None` | Save Meta + error model (two files) |
+| `summary()` | `str` | Label distribution |
 
-**IMPORTANT:** `get_prediction(X)` and `get_probability(X)` auto-cast feature types via `_cast_features()` before delegating to the error model. This avoids the `TypeError` gotcha when passing strings for numeric features. The original Snake `get_prediction` does NOT do this — Meta is stricter about user ergonomics.
-
-### Label Schemes
-
-**Binary (exactly 2 unique targets) — 5 classes:**
-
-| Label | Meaning |
-|-------|---------|
-| **TP** | Predicted positive, actual positive |
-| **TN** | Predicted negative, actual negative |
-| **FP** | Predicted positive, actual negative |
-| **FN** | Predicted negative, actual positive |
-| **NS** | Runs disagree (not stable) |
-
-Positive class = minority class (by count). Tiebreaker = first in sorted order.
-
-**Multiclass (3+ unique targets) — up to 7 classes (rank-based):**
-
-| Label | Meaning |
-|-------|---------|
-| **R1** | Correct class was top prediction |
-| **R2** | Correct class was 2nd highest probability |
-| **R3** | Correct class was 3rd |
-| **R4** | Correct class was 4th |
-| **R5** | Correct class was 5th |
-| **W** | Correct class not in top 5 |
-| **NS** | Runs disagree |
-
-Rank is capped by the number of classes. A 3-class problem can only produce R1, R2, R3, and NS (never R4, R5, or W).
-
-### Save & Load (JSON)
-
-`to_json(path)` writes **two files**:
-- `path` — Meta metadata (labels, config, population, agreement_rate, etc.)
-- `path` with `_error_model.json` suffix — the error_model Snake serialized via `Snake.to_json()`
-
-```json
-{
-  "version": "4.4.4",
-  "meta_version": 1,
-  "target": "Survived",
-  "is_binary": true,
-  "positive_class": 1,
-  "labels": ["TN", "TP", "FN", ...],
-  "label_counts": {"TN": 313, "TP": 152, ...},
-  "agreement_rate": 0.93,
-  "population": [...],
-  "config": {
-    "n_layers": 7, "bucket": 400, "noise": 0.25, "workers": 1,
-    "n_splits": 25, "n_runs": 2, "split_ratio": 0.8,
-    "error_layers": 7, "error_bucket": 50
-  },
-  "error_model": "meta_error_model.json"
-}
-```
-
-`Meta("meta.json")` / `_from_json(path)` reads both files and restores the full Meta object without re-running the labeling pipeline. Loading a non-Meta JSON (e.g. a regular Snake model) raises `ValueError("... is not a valid Meta JSON file")`.
-
-### Internal Methods
-
-| Method | Description |
-|--------|-------------|
-| `_normalize_knowledge(Knowledge, target_index, excluded)` | Train 1-layer probe Snake to convert any input to list[dict] + target name + type_map |
-| `_build_type_map(model)` | Extract `{feature: datatype}` from Snake model |
-| `_convert_features(row, type_map)` | Strip target, cast types for prediction (used during labeling) |
-| `_cast_features(X)` | Cast feature types to match error model's expectations (used in get_prediction/get_probability) |
-| `_label_binary(pred, actual)` | → TP/TN/FP/FN |
-| `_label_multiclass(prob_dict, actual)` | → R1-R5/W (rank of correct class in probability ranking) |
-| `_label_one_run()` | One run of n_splits random splits → majority-vote labels |
-| `_generate_labels()` | n_runs independent runs → agreement filter → final labels + counts + agreement_rate |
-| `_determine_positive_class()` | Minority class for binary |
-| `_train_error_model()` | Train Snake on `to_list()` with target=`error_type`, **strips original target column** to prevent data leak |
-| `_from_json(path)` | Load saved Meta from JSON + sibling error model file |
-
-### Usage Pattern (production)
+### Flip logic
 
 ```python
-from algorithmeai import Snake, Meta
-
-# Train meta — recommended params from Titanic experiments
-meta = Meta(data, target_index="survived",
-            n_layers=7, bucket=400, noise=0.25, workers=10,
-            n_splits=40, n_runs=2, split_ratio=0.8,
-            agreement_threshold=0.55,
-            error_layers=20, error_bucket=20,
-            vocal=True)
-
-# Inspect
-print(meta.summary())
-print(meta.agreement_rate)   # aim for >90%
-
-# Save
-meta.to_json("meta.json")
-
-# Later: load without retraining
-meta = Meta("meta.json")
-
-# Predict error type
-error = meta.get_prediction(X)       # "FN"
-error_prob = meta.get_probability(X)  # {"TP": 0.1, "FN": 0.6, ...}
-
-# Targeted flip: if high-confidence FN, override base prediction
-base = Snake("model.json")
-pred = base.get_prediction(X)
+base_pred = base.get_prediction(X)
+error_prob = meta.get_probability(X)
 if error_prob.get("FN", 0) > 0.70:
-    pred = meta.positive_class  # flip to positive
+    base_pred = meta.positive_class  # flip to positive
 ```
 
-### Recommended Meta Parameters (from Titanic experiments)
+4 flip sources: FN direct, FP direct, TP contradiction, TN contradiction. Contradiction flips (TP/TN) tend to outperform direct flips. Always evaluate all 4 on held-out data.
 
-| Parameter | Recommended | Reason |
-|-----------|-------------|--------|
-| `split_ratio` | `0.8` | Each sample appears in holdout ~8 times/run, enough for majority voting. `0.95` gives ~1.25 appearances → weak voting, high NS |
-| `n_splits` | `30-40` | More splits = more holdout appearances per sample. 40 splits at 0.8 ratio gives ~8 appearances |
-| `n_runs` | `2` | Two independent runs with cross-run agreement. More runs = stricter (all must agree) |
-| `agreement_threshold` | `0.55-0.65` | Within-run majority vote threshold. 0.55 with ~8 appearances ≈ 5/8 must agree. 0.9+ is too strict |
-| `error_layers` | `15-20` | The error model needs high capacity — 5 classes with imbalanced distribution |
-| `error_bucket` | `20-25` | Small buckets prevent minority classes (FP/FN) from being swamped by TN |
-| `n_layers` (ephemeral) | `5-7` | Ephemeral models should be representative, not maximally strong. Too strong → too few errors → sparse FP/FN labels |
+### Config guidance
 
-**Key finding:** The error model's original target column is now excluded from training (v4.4.4 fix). Without this fix, the error model learns trivial patterns from the target that are unavailable at inference time, collapsing all predictions to TN.
+`n_splits=30-40, n_runs=2, split_ratio=0.8` for majority voting. `error_layers=15-20, error_bucket=20-25` for error model capacity. The error model strips the original target column from training (v4.4.4 fix) — without this, it collapses to TN-majority.
 
 ## Things That Will Bite You
 
@@ -732,6 +629,13 @@ if error_prob.get("FN", 0) > 0.70:
 9. **Binary True/False targets are stored as int 0/1.** As of v4.3.2+, `"True"`/`"False"` strings are correctly converted in both CSV and list[dict] flows. Compare predictions against `0`/`1` (int), not `"True"`/`"False"` (str).
 
 ## Changelog
+
+### v5.0.0 (Feb 2026)
+
+- **Lookalike origin labeling**: Each lookalike now carries `"c"` (core) or `"n"` (noise) origin. New method `get_lookalikes_labeled(X)` returns `[global_idx, target_value, condition, origin]` per lookalike. Enables weighted probability computation with `(w_c, w_n)` integer weights.
+- **Full-population noise**: Noise in `build_bucket_chain` now sampled from the entire population minus core (was: remaining minus core). Deep-chain buckets now see global diversity instead of narrow filtered subsets.
+- **Origins persisted in JSON**: Each bucket stores `"origins"` parallel to `"members"`. Backwards compatible — old models default to all-core.
+- **Regime discovery**: At low layers (7), core dominates (AUROC 0.895 vs noise 0.768). At high layers (77) with noise=0.40, they converge (0.891 vs 0.877) and noise wins 59% of divergence cases. Optimal `(w_c, w_n)` depends on `n_layers`.
 
 ### v4.4.4 (Feb 2026)
 

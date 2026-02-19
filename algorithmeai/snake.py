@@ -19,7 +19,7 @@ except ImportError:
 #                                                              #
 #    Algorithme.ai : Snake         Author : Charles Dana       #
 #                                                              #
-#    v4.4.4 — SAT-ensembled bucketed multiclass classifier     #
+#    v5.0.0 — SAT-ensembled bucketed multiclass classifier     #
 #                                                              #
 ################################################################
 
@@ -27,7 +27,7 @@ _BANNER = """################################################################
 #                                                              #
 #    Algorithme.ai : Snake         Author : Charles Dana       #
 #                                                              #
-#    v4.4.4 — SAT-ensembled bucketed multiclass classifier     #
+#    v5.0.0 — SAT-ensembled bucketed multiclass classifier     #
 #                                                              #
 ################################################################
 """
@@ -142,20 +142,22 @@ def build_bucket_chain(population, targets, bucket, oppose_fn, apply_literal_fn,
             break
         core_set = set(selected)
         rest = [i for i in remaining if i not in core_set]
+        full_noise_pool = [i for i in range(len(population)) if i not in core_set]
         members = list(selected)
         noise_added = 0
-        if noise > 0 and len(rest) > 0:
+        if noise > 0 and len(full_noise_pool) > 0:
             noise_count = max(1, int(noise * len(selected)))
-            noise_added = min(noise_count, len(rest))
-            members += sample(rest, noise_added)
-        chain.append({"condition": condition, "members": members})
+            noise_added = min(noise_count, len(full_noise_pool))
+            members += sample(full_noise_pool, noise_added)
+        origins = ["c"] * len(selected) + ["n"] * noise_added
+        chain.append({"condition": condition, "members": members, "origins": origins})
         elapsed_branch = time() - t_branch
         if log_fn:
             log_fn(f"#   [bucket_chain] BRANCH {branch_idx}: IF({len(condition)} literals) -> {len(selected)} core + {noise_added} noise = {len(members)} members ({elapsed_branch:.3f}s)")
         remaining = rest
         branch_idx += 1
     if remaining:
-        chain.append({"condition": None, "members": remaining})
+        chain.append({"condition": None, "members": remaining, "origins": ["c"] * len(remaining)})
         if log_fn:
             log_fn(f"#   [bucket_chain] ELSE bucket: {len(remaining)} remaining members")
     elapsed_chain = time() - t_chain_start
@@ -1093,6 +1095,28 @@ class Snake():
                             all_lookalikes.append([global_idx, self.targets[global_idx], condition])
         return all_lookalikes
 
+    def get_lookalikes_labeled(self, X):
+        """Like get_lookalikes but each entry includes origin: 'c' (core) or 'n' (noise).
+        Returns list of [global_idx, target_value, condition, origin]."""
+        all_lookalikes = []
+        seen = set()
+        for layer in self.layers:
+            bucket = traverse_chain(layer, X, self.apply_literal)
+            if bucket is None:
+                continue
+            origins = bucket.get("origins")
+            clause_bool = [self.apply_clause(X, c) for c in bucket["clauses"]]
+            negated = {i for i in range(len(clause_bool)) if not clause_bool[i]}
+            for l in bucket["lookalikes"]:
+                for condition in bucket["lookalikes"][l]:
+                    if all(c_idx in negated for c_idx in condition):
+                        global_idx = bucket["members"][int(l)]
+                        if global_idx not in seen:
+                            seen.add(global_idx)
+                            origin = origins[int(l)] if origins else "c"
+                            all_lookalikes.append([global_idx, self.targets[global_idx], condition, origin])
+        return all_lookalikes
+
     def _get_probability_from_lookalikes(self, lookalikes):
         """Compute probability vector from a pre-computed lookalikes list.
         Returns list of (target_value, probability) tuples to support unhashable targets."""
@@ -1428,7 +1452,7 @@ class Snake():
 
     def to_json(self, fout="snakeclassifier.json"):
         snake_classifier = {
-            "version": "4.4.4",
+            "version": "5.0.0",
             "population": self.population,
             "header": self.header,
             "target": self.target,

@@ -132,7 +132,7 @@ class Meta:
         self.error_model.to_json(error_model_path)
 
         meta_data = {
-            "version": "4.4.4",
+            "version": "5.0.0",
             "meta_version": 1,
             "target": self.target,
             "is_binary": self.is_binary,
