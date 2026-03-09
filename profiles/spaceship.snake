@@ -1,0 +1,11 @@
+# Spaceship Titanic — 8693 rows, 12 mixed (6 numeric + 6 short categorical), binary
+# Winner: none beat original at 5 layers (industrial +0.1pp AUROC, -0.2pp acc)
+# At higher layers: industrial edges ahead (78.0% vs 77.2% at optimized threshold)
+# Why: CryoSleep/HomePlanet/Destination are 2-3 value categoricals — T substring
+#      with FA/TA single-char matching is the ideal test. Spending columns are
+#      zero-heavy (cryo passengers spend nothing) — midpoint at the 0 boundary.
+#      Original's coin flip between structural+substring naturally matches this.
+
+[profile:spaceship]
+  text:    T:50  TN:8  TLN:8  TWS:5  TPS:5  TSS:5  PFX:5  SFX:5  TUC:3  TDC:3  TSC:3
+  numeric: N:100

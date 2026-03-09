@@ -20,7 +20,7 @@ except ImportError:
 #                                                              #
 #    Algorithme.ai : Snake         Author : Charles Dana       #
 #                                                              #
-#    v5.2.0 — SAT-ensembled bucketed multiclass classifier     #
+#    v5.2.1 — SAT-ensembled bucketed multiclass classifier     #
 #                                                              #
 ################################################################
 
@@ -28,7 +28,7 @@ _BANNER = """################################################################
 #                                                              #
 #    Algorithme.ai : Snake         Author : Charles Dana       #
 #                                                              #
-#    v5.2.0 — SAT-ensembled bucketed multiclass classifier     #
+#    v5.2.1 — SAT-ensembled bucketed multiclass classifier     #
 #                                                              #
 ################################################################
 """
@@ -43,30 +43,37 @@ _VALID_PROFILES = ("auto", "balanced", "linguistic", "industrial",
 # Helper functions for new literal types (module-level, pure Python)
 # ---------------------------------------------------------------------------
 
-def _levenshtein(a, b, _MAX=32):
-    """Wagner-Fischer DP, space-optimized, capped at _MAX chars."""
-    a = a[:_MAX]
-    b = b[:_MAX]
+def _levenshtein(a, b):
+    """String distance: exact DP for short strings, O(n) bag-of-chars for long ones.
+    Always returns an int. Preserves ordering so midpoint splits work."""
     if not a:
         return len(b)
     if not b:
         return len(a)
-    if abs(len(a) - len(b)) > _MAX // 2:
-        return max(len(a), len(b))
-    prev = list(range(len(b) + 1))
-    for i, ca in enumerate(a):
-        curr = [i + 1] + [0] * len(b)
-        for j, cb in enumerate(b):
-            curr[j + 1] = min(prev[j + 1] + 1, curr[j] + 1,
-                              prev[j] + (0 if ca == cb else 1))
-        prev = curr
-    return prev[-1]
+    # Short strings: exact Wagner-Fischer DP
+    if len(a) <= 32 and len(b) <= 32:
+        prev = list(range(len(b) + 1))
+        for i, ca in enumerate(a):
+            curr = [i + 1] + [0] * len(b)
+            for j, cb in enumerate(b):
+                curr[j + 1] = min(prev[j + 1] + 1, curr[j] + 1,
+                                  prev[j] + (0 if ca == cb else 1))
+            prev = curr
+        return prev[-1]
+    # Long strings: O(n) char-frequency distance
+    # = chars you'd need to insert + delete to transform a into b
+    # Lower bound on true levenshtein, preserves midpoint ordering
+    fa, fb = {}, {}
+    for c in a:
+        fa[c] = fa.get(c, 0) + 1
+    for c in b:
+        fb[c] = fb.get(c, 0) + 1
+    shared = sum(min(fa.get(c, 0), fb.get(c, 0)) for c in set(fa) | set(fb))
+    return (len(a) - shared) + (len(b) - shared)
 
 
-def _jaccard_bigrams(a, b, _MAX=32):
+def _jaccard_bigrams(a, b):
     """Jaccard similarity on character bigrams. Returns 0.0-1.0."""
-    a = a[:_MAX]
-    b = b[:_MAX]
     if len(a) < 2 and len(b) < 2:
         return 1.0 if a == b else 0.0
     sa = {a[i:i+2] for i in range(max(0, len(a)-1))}
@@ -110,9 +117,10 @@ def _hex_ratio(s):
     return sum(1 for c in s if c in hex_chars) / len(s)
 
 
-def _repeat_period_score(s, _MAX=32):
+def _repeat_period_score(s):
     """How periodic is the string? 1.0 = perfectly repeating, 0.0 = no pattern."""
-    s = s[:_MAX]
+    if len(s) > 64:
+        s = s[:64]  # cap period search space, not the signal
     if len(s) < 4:
         return 0.0
     best = 0.0
@@ -999,7 +1007,8 @@ class Snake():
         return [index, (len(fv.split(".")) + len(tv.split("."))) / 2, len(tv.split(".")) > len(fv.split(".")), "TSS"]
 
     def _gen_text_distance(self, index, T, F):
-        """Generate LEV or JAC literal. Returns literal or None."""
+        """Generate LEV or JAC literal. Returns literal or None.
+        LEV uses O(n) bag-of-chars on long strings — no truncation."""
         h = self.header[index]
         tv, fv = str(T[h]), str(F[h])
         if tv == fv:
@@ -1544,7 +1553,7 @@ class Snake():
             if negat:
                 return value <= field
             return value > field
-        # --- New literal types (v5.2.0) ---
+        # --- New literal types (v5.2.1) ---
         elif datat == "ND":
             dc = _count_digits(str(field))
             return value <= dc if negat else value > dc
@@ -2038,7 +2047,7 @@ class Snake():
             if negat:
                 return f'"{h}" <= {value}'
             return f'"{h}" > {value}'
-        # --- New literal types (v5.2.0) ---
+        # --- New literal types (v5.2.1) ---
         if datat == "ND":
             return f'digits("{h}") >= {value}' if negat else f'digits("{h}") < {value}'
         if datat == "TUC":
@@ -2285,7 +2294,7 @@ class Snake():
 
     def to_json(self, fout="snakeclassifier.json"):
         snake_classifier = {
-            "version": "5.2.0",
+            "version": "5.2.1",
             "population": self.population,
             "header": self.header,
             "target": self.target,

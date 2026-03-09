@@ -1,0 +1,8 @@
+# PIMA Diabetes — 768 rows, 8 numeric, binary
+# Winner: industrial (+3.6pp AUROC over original)
+# Why: FA/TA single-char matching on stringified numerics + pure midpoint on N
+# Zeros mean "missing" — NZR would help but midpoint already splits 0 vs nonzero
+
+[profile:pima]
+  text:    T:40  TN:10  TLN:10  TWS:5  TPS:5  TSS:5  PFX:5  SFX:5  TUC:5  TDC:5  TSC:5
+  numeric: N:80  ND:20

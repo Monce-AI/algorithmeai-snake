@@ -15,34 +15,40 @@ from libc.stdlib cimport abs as c_abs
 # String helper functions (C-speed equivalents of module-level helpers)
 # ---------------------------------------------------------------------------
 
-cdef int _levenshtein_c(str a, str b, int max_len=32):
-    """Wagner-Fischer DP, capped at max_len chars."""
-    a = a[:max_len]
-    b = b[:max_len]
+cdef int _levenshtein_c(str a, str b):
+    """String distance: exact DP for short, O(n) bag-of-chars for long."""
     cdef int la = len(a)
     cdef int lb = len(b)
     if la == 0:
         return lb
     if lb == 0:
         return la
-    if la - lb > max_len // 2 or lb - la > max_len // 2:
-        return max(la, lb)
-    cdef list prev = list(range(lb + 1))
-    cdef list curr
-    cdef int i, j, cost
-    for i in range(la):
-        curr = [i + 1] + [0] * lb
-        for j in range(lb):
-            cost = 0 if a[i] == b[j] else 1
-            curr[j + 1] = min(prev[j + 1] + 1, curr[j] + 1, prev[j] + cost)
-        prev = curr
-    return prev[lb]
+    # Short strings: exact DP
+    if la <= 32 and lb <= 32:
+        prev = list(range(lb + 1))
+        for i in range(la):
+            curr = [i + 1] + [0] * lb
+            for j in range(lb):
+                cost = 0 if a[i] == b[j] else 1
+                curr[j + 1] = min(prev[j + 1] + 1, curr[j] + 1, prev[j] + cost)
+            prev = curr
+        return prev[lb]
+    # Long strings: O(n) char-frequency distance
+    cdef dict fa = {}
+    cdef dict fb = {}
+    cdef str c
+    cdef int shared = 0
+    for c in a:
+        fa[c] = fa.get(c, 0) + 1
+    for c in b:
+        fb[c] = fb.get(c, 0) + 1
+    for c in set(fa) | set(fb):
+        shared += min(fa.get(c, 0), fb.get(c, 0))
+    return (la - shared) + (lb - shared)
 
 
-cdef double _jaccard_bigrams_c(str a, str b, int max_len=32):
-    """Jaccard similarity on char bigrams, capped."""
-    a = a[:max_len]
-    b = b[:max_len]
+cdef double _jaccard_bigrams_c(str a, str b):
+    """Jaccard similarity on char bigrams."""
     if len(a) < 2 and len(b) < 2:
         return 1.0 if a == b else 0.0
     cdef set sa = {a[i:i+2] for i in range(max(0, len(a)-1))}
@@ -95,8 +101,9 @@ cdef double _hex_ratio_c(str s):
     return <double>count / <double>len(s)
 
 
-cdef double _repeat_period_score_c(str s, int max_len=32):
-    s = s[:max_len]
+cdef double _repeat_period_score_c(str s):
+    if len(s) > 64:
+        s = s[:64]
     cdef int slen = len(s)
     if slen < 4:
         return 0.0

@@ -1,0 +1,24 @@
+# 20 Newsgroups — 18K docs, 1 text feature (200 chars), 4 classes
+# Winner: scientific (+9.2pp over original)
+# WHY THIS IS COUNTERINTUITIVE:
+#   Scientific is a numeric-focused profile. On a pure-text dataset
+#   with 0 numeric features, it never fires the numeric path.
+#   Its text fallback is just: T:40  TN:30  TLN:30
+#   That's a TIGHT set: substring + length + alphabet. No expensive
+#   distance/positional/charclass ops. Fast oppose → more clauses
+#   per time budget → better discrimination.
+#
+#   Original is 2x slower because its coin flip wastes 50% of calls
+#   on structural tests that often fail on long text, falling through
+#   to substring anyway. Scientific goes straight to the good stuff.
+#
+#   Linguistic was the WORST (-5.2pp, 310 seconds) because LEV/JAC
+#   on 200-char strings are expensive even with O(n) bag-of-chars,
+#   and the signal doesn't justify the cost.
+#
+# LESSON: on long text, SPEED > DIVERSITY. Cheap fast literals that
+#         fire reliably beat expensive clever literals that are slow.
+
+[profile:newsgroups]
+  text:    T:50  TN:25  TLN:25
+  numeric: N:100

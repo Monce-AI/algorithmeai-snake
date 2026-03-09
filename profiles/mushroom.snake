@@ -1,0 +1,8 @@
+# Mushroom — 8124 rows, 22 single-char categorical features, binary
+# Winner: all tie at 100% (trivial dataset for any approach)
+# Why: single-letter codes → T substring finds exact char matches instantly
+#      22 features with high info gain → SAT resolves in few clauses regardless
+
+[profile:mushroom]
+  text:    T:70  TN:15  TLN:15
+  numeric: N:100

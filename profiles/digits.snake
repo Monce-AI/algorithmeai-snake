@@ -1,0 +1,13 @@
+# Digits — 1797 rows, 64 numeric (0-16 pixel intensities), 10 classes
+# Winner: categorical (+2.2pp over original)
+# Why: pixel values are integers 0-16. Split counts (TWS/TPS/TSS)
+#      on the string representation "8.0" find structure:
+#      - TSS distinguishes "0.0" (1 period) from "10.0" (1 period)
+#        — actually same. But the categorical T:30 substring path
+#        finds digit-level patterns: "1" in "16.0" but not "8.0".
+#      Mostly: categorical's balanced text+numeric mix works well
+#      when all features are small integers represented as floats.
+
+[profile:digits]
+  text:    TWS:10  TPS:10  TSS:10  T:30  TN:8  TLN:7  LEV:5  JAC:5  PFX:5  SFX:5  TUC:3  TDC:1  TSC:1
+  numeric: N:80  ND:20

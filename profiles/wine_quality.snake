@@ -1,0 +1,10 @@
+# Wine Quality — 6497 rows, 11 numeric, multiclass (quality 3-9)
+# Winner: linguistic (+1.8pp over original) — but likely noise at 5 layers
+# Runner-up: scientific (+1.7pp)
+# Why: log-normal distributions (residual sugar, chlorides) benefit from NL
+#      z-score separates quality tiers around the mean
+#      pure numeric data, text branch irrelevant
+
+[profile:wine_quality]
+  text:    T:100
+  numeric: N:40  NZ:20  NL:15  NMG:15  ND:10

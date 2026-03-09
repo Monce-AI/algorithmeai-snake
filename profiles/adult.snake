@@ -1,0 +1,9 @@
+# Adult Income — 48K rows, 14 mixed (6 numeric + 8 categorical), binary
+# Winner: industrial (+1.6pp AUROC over original)
+# Why: short categorical values (workclass, education, occupation) need substring
+#      numeric features (age, hours, capital_gain) need midpoint
+#      capital_gain/loss are zero-heavy — midpoint at 0 boundary works
+
+[profile:adult]
+  text:    T:40  TN:10  TLN:10  TWS:5  TPS:5  TSS:5  PFX:5  SFX:5  TUC:5  TDC:5  TSC:5
+  numeric: N:80  ND:20

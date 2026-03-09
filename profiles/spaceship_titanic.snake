@@ -1,0 +1,17 @@
+# Spaceship Titanic — 8693 rows, 12 mixed (6 num + 6 text), binary
+# Winner: ORIGINAL HOLDS (industrial +0.1pp AUROC, -0.2pp acc)
+# Why: CryoSleep ("True"/"False") is the key discriminator.
+#      Original's coin flip → structural+alphabet path produces
+#      55% N + 38% T + 3% TLN + 3% TN — near-optimal for this data.
+#      Spending columns (RoomService etc.) are mostly 0.0 → midpoint
+#      splits around 0 are the perfect test.
+#      No profile has found a better weight distribution yet.
+#
+# Theoretical best (not yet proven):
+#   The missing piece is a "zero test" literal that doesn't dilute
+#   clause quality. NZR was tried and HURT — too broad, matches
+#   all cryo passengers at once. The signal needs to stay tight.
+
+[profile:spaceship_titanic]
+  text:    T:50  TN:8  TLN:8  TWS:8  TPS:8  TSS:8
+  numeric: N:100

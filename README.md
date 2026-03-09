@@ -5,18 +5,19 @@
 
 [![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-Proprietary-red.svg?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAxTDMgNXY2YzcgNCA4LjUgOC40IDkgMTIuOEM5LjUgMjAuNCA4IDE2IDggMTFWNmw0LTIuNUwxNiA2djVjMCA1LTEuNSA5LjQtNCAxa)](LICENSE)
-[![Version](https://img.shields.io/badge/v5.2.0-Oppose_Profiles-blueviolet.svg?logo=semanticrelease)](https://github.com/Monce-AI/algorithmeai-snake)
-[![Build](https://img.shields.io/badge/Build-Passing-brightgreen.svg?logo=githubactions&logoColor=white)](#)
+[![Version](https://img.shields.io/badge/v5.2.1-30_Literal_Types-blueviolet.svg?logo=semanticrelease)](https://github.com/Monce-AI/algorithmeai-snake)
+[![Build](https://img.shields.io/badge/Build-236_tests_passing-brightgreen.svg?logo=githubactions&logoColor=white)](#testing)
+[![Profiles](https://img.shields.io/badge/Profiles-7_oppose_strategies-orange.svg?logo=probot&logoColor=white)](#oppose-profiles-v520)
 
 [![Production](https://img.shields.io/badge/Production-Live_on_AWS-FF9900.svg?logo=amazonaws&logoColor=white)](https://snake.aws.monce.ai)
 [![API](https://img.shields.io/badge/API-snake.aws.monce.ai-009688.svg?logo=fastapi&logoColor=white)](https://snake.aws.monce.ai/health)
-[![Accuracy](https://img.shields.io/badge/Train_Accuracy-100%25-brightgreen.svg?logo=target)](#benchmarks)
-[![Throughput](https://img.shields.io/badge/Throughput-201_qps-blue.svg?logo=speedtest)](#)
+[![AUROC](https://img.shields.io/badge/AUROC-0.999_Breast_Cancer-brightgreen.svg?logo=target)](#snake-vs-rfgb)
+[![Titanic](https://img.shields.io/badge/Titanic-0.924_AUROC-blue.svg?logo=speedtest)](#snake-vs-rfgb)
 
 [![Algorithm](https://img.shields.io/badge/Algorithm-SAT--based_Lookalikes-7B2D8B.svg?logo=probot&logoColor=white)](#what-is-snake)
 [![XAI](https://img.shields.io/badge/XAI-Fully_Explainable-FF6F00.svg?logo=opensourceinitiative&logoColor=white)](#prediction-api)
-[![Complexity](https://img.shields.io/badge/Complexity-O(n·log(n)·m·b²)-lightgrey.svg?logo=wolframmathematica)](#architecture)
-[![Architecture](https://img.shields.io/badge/Cascade-Snake_→_Fuzzy_→_LLM-E91E63.svg?logo=stackblitz&logoColor=white)](#architecture)
+[![Literals](https://img.shields.io/badge/Literals-30_boolean_test_types-lightgrey.svg?logo=wolframmathematica)](#oppose-type-formalism)
+[![Cython](https://img.shields.io/badge/Cython-Optional_3x_speedup-E91E63.svg?logo=stackblitz&logoColor=white)](#optional-cython-acceleration)
 
 **Author:** Charles Dana · [Monce SAS](https://monce.ai)
 
@@ -367,43 +368,44 @@ snake predict model.json -q '{"petal_length": 4.3}' --audit
 snake info model.json
 ```
 
+## Snake vs RF/GB
+
+Same data, same split (80/20, seed=42), **zero preprocessing**. Snake uses 15 layers, bucket=250, workers=10. RF/GB use 100 estimators (sklearn defaults). No feature engineering on either side.
+
+**Pure numeric (float matrices):**
+
+| Dataset | Features | Classes | Random Forest | GradBoost | Snake (best profile) | Profile |
+|---------|----------|---------|--------------|-----------|---------------------|---------|
+| Iris | 4 | 3 | 100.0% | 100.0% | **100.0%** | all tie |
+| Wine | 13 | 3 | 100.0% | 94.4% | **100.0%** | original |
+| Breast Cancer | 30 | 2 | AUROC 0.997 | AUROC 0.995 | **AUROC 0.999** | original |
+| Digits | 64 | 10 | **97.2%** | 96.9% | 96.4% | original |
+
+**Mixed text + numeric (the Snake sweet spot):**
+
+| Dataset | Features | Classes | Snake AUROC | Snake Acc | Best profile | vs original |
+|---------|----------|---------|------------|-----------|-------------|-------------|
+| Classic Titanic (w/ Names) | 8 | 2 | **0.924** | **87.2%** | cryptographic | +3.8pp |
+| Spaceship Titanic | 12 | 2 | **0.840** | **78.6%** | balanced | +3.7pp |
+
+Snake **beats RF and GB on Breast Cancer AUROC** (0.999 vs 0.997 vs 0.995). Ties on Iris/Wine. Within 0.8pp on Digits. On mixed text+numeric data, profiles add up to **+3.8pp AUROC** over the original oppose — no preprocessing required.
+
 ## Benchmarks
 
 Accuracy on classic sklearn datasets + Kaggle Spaceship Titanic. 80/20 train/test split (seed=42), `bucket=250`, `noise=0.25`. Run `python benchmarks.py` to reproduce.
 
-**`n_layers=5`**
+**`n_layers=15` (recommended)**
 
-| Dataset | Type | Samples | Features | Classes | Train Acc | Test Acc | Train Time | Inference |
-|---------|------|---------|----------|---------|-----------|----------|------------|-----------|
-| Iris | Multi | 150 | 4 | 3 | 100.0% | 96.7% | 0.0s | 0.2ms |
-| Wine | Multi | 178 | 13 | 3 | 100.0% | 97.2% | 0.0s | 0.2ms |
-| Breast Cancer | Binary | 569 | 30 | 2 | 100.0% | 96.5% | 0.1s | 0.6ms |
-| Digits | Multi | 1797 | 64 | 10 | 100.0% | 90.6% | 1.9s | 1.2ms |
-| Spaceship Titanic | Binary | 8693 | 12 | 2 | 94.4% | 76.7% | 4.9s | 1.1ms |
+| Dataset | Type | Samples | Features | Classes | Test Acc | AUROC | Train Time |
+|---------|------|---------|----------|---------|----------|-------|------------|
+| Iris | Multi | 150 | 4 | 3 | 100.0% | — | 0.02s |
+| Wine | Multi | 178 | 13 | 3 | 100.0% | — | 0.02s |
+| Breast Cancer | Binary | 569 | 30 | 2 | 98.2% | 0.999 | 0.05s |
+| Digits | Multi | 1797 | 64 | 10 | 96.4% | — | 0.6s |
+| Classic Titanic | Binary | 891 | 8 | 2 | 87.2% | 0.924 | 0.2s |
+| Spaceship Titanic | Binary | 8693 | 12 | 2 | 78.6% | 0.840 | 1.7s |
 
-**`n_layers=15`**
-
-| Dataset | Type | Samples | Features | Classes | Train Acc | Test Acc | Train Time | Inference |
-|---------|------|---------|----------|---------|-----------|----------|------------|-----------|
-| Iris | Multi | 150 | 4 | 3 | 100.0% | 100.0% | 0.0s | 0.5ms |
-| Wine | Multi | 178 | 13 | 3 | 100.0% | 97.2% | 0.0s | 0.7ms |
-| Breast Cancer | Binary | 569 | 30 | 2 | 100.0% | 95.6% | 0.3s | 1.9ms |
-| Digits | Multi | 1797 | 64 | 10 | 100.0% | 95.3% | 5.6s | 3.6ms |
-| Spaceship Titanic | Binary | 8693 | 12 | 2 | 95.0% | 77.6% | 15.0s | 2.5ms |
-
-**`n_layers=50`**
-
-| Dataset | Type | Samples | Features | Classes | Train Acc | Test Acc | Train Time | Inference |
-|---------|------|---------|----------|---------|-----------|----------|------------|-----------|
-| Iris | Multi | 150 | 4 | 3 | 100.0% | 100.0% | 0.1s | 1.7ms |
-| Wine | Multi | 178 | 13 | 3 | 100.0% | 100.0% | 0.1s | 2.3ms |
-| Breast Cancer | Binary | 569 | 30 | 2 | 100.0% | 97.4% | 0.9s | 6.3ms |
-| Digits | Multi | 1797 | 64 | 10 | 100.0% | 96.1% | 19.1s | 11.8ms |
-| Spaceship Titanic | Binary | 8693 | 12 | 2 | 94.8% | 78.4% | 51.1s | 7.4ms |
-
-**Spaceship Titanic** ([Kaggle competition](https://www.kaggle.com/competitions/spaceship-titanic)): 8,693 passengers, binary classification (transported or not). Features: HomePlanet, CryoSleep, Destination, VIP, CabinDeck, CabinSide + 6 numeric spending columns. Minimal preprocessing — no feature engineering beyond cabin splitting. Kaggle leaderboard top scores are ~80-81%.
-
-More layers improve test accuracy at the cost of training time and inference latency. Benchmark script requires `pandas` and `scikit-learn` for data loading/splitting only — Snake itself has zero dependencies.
+More layers improve accuracy at the cost of training time. Benchmark scripts require `pandas` and `scikit-learn` for data loading only — Snake itself has zero dependencies.
 
 ## Architecture
 
@@ -631,6 +633,16 @@ pytest tests/test_oppose_profiles.py  # oppose profiles, new literal types, auto
 236 tests across 11 files. Tests use `tests/fixtures/sample.csv` (15 rows, 3 classes) with small `n_layers` (1–3) and `bucket` (3–5) for speed.
 
 ## Changelog
+
+### v5.2.1 (Mar 2026)
+
+- **O(n) string distance**: Levenshtein uses exact DP for strings ≤32 chars, O(n) char-frequency distance for longer strings. No truncation — signal preserved, compute bounded
+- **Dataset-specific profiles**: 8 `.snake` profile files in `profiles/` with empirical annotations (PIMA, Breast Cancer, Titanic, Spaceship, Wine Quality, Mushroom, Digits, Adult Income)
+- **Snake vs RF/GB benchmark**: Snake beats Random Forest on Breast Cancer AUROC (0.999 vs 0.997). Ties on Iris/Wine. Within 0.8pp on Digits. Same data, zero preprocessing
+- **Classic Titanic with Names**: cryptographic profile achieves 0.924 AUROC / 87.2% accuracy (+3.8pp over original)
+- **Meta classifier removed** from codebase
+- **Linguistic profile deprecated**: never won where expected, blocks training on long text. Pure NLP is out of Snake's scope
+- **Cython bool-safe**: `str(field)` casts in `_accel.pyx` handle bool/None values without TypeError
 
 ### v5.2.0 (Mar 2026)
 

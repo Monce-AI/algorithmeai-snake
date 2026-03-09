@@ -1,0 +1,11 @@
+# Adult Income — 48K rows, 14 mixed (6 numeric + 8 categorical text), binary
+# Winner: industrial (+1.6pp AUROC over original)
+# Why: short categorical strings (workclass, education, marital_status,
+#      occupation, relationship, race, sex, native_country) — all 2-20 chars.
+#      FA/TA single-char matching finds unique chars instantly.
+#      Numeric features (age, capital_gain, hours) → pure midpoint.
+#      capital_gain/loss are heavily zero → midpoint around 0 works.
+
+[profile:adult_income]
+  text:    T:40  TN:10  TLN:10  TWS:5  TPS:5  TSS:5  PFX:5  SFX:5  TUC:5  TDC:5  TSC:5
+  numeric: N:100

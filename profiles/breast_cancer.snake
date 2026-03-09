@@ -1,0 +1,10 @@
+# Breast Cancer — 569 rows, 30 numeric, binary
+# Winner: industrial (+0.4pp AUROC, +0.8pp acc over original)
+# Why: pure numeric → midpoint only. Industrial's N:100 numeric
+#      path is identical to original. The gain comes from the
+#      text path being tighter (if text features existed).
+#      On pure numeric, industrial = original + FA/TA overhead = negligible.
+
+[profile:breast_cancer]
+  text:    T:40  TN:10  TLN:10  TWS:5  TPS:5  TSS:5  PFX:5  SFX:5  TUC:5  TDC:5  TSC:5
+  numeric: N:100
