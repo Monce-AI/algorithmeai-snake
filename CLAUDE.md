@@ -9,8 +9,8 @@ Author: Charles Dana / Monce SAS. Charles is the user you're talking to.
 
 ```
 algorithmeai/
-  __init__.py          # Exports: Snake, floatconversion, Meta, __version__ = "5.0.0"
-  snake.py             # The entire classifier (~1500 lines, zero dependencies)
+  __init__.py          # Exports: Snake, floatconversion, Meta, __version__ = "5.2.0"
+  snake.py             # The entire classifier (~2100 lines, zero dependencies)
   meta.py              # Meta error classifier (~250 lines, depends on snake.py)
   _accel.pyx           # Optional Cython hot paths (inference + training acceleration)
   cli.py               # CLI: snake train / predict / info
@@ -27,6 +27,7 @@ tests/
   test_stress.py       # Stress tests, batch equivalence
   test_ultimate_stress.py  # Extended stress tests
   test_meta.py         # Meta error classifier: labels, save/load, predictions, CSV export
+  test_oppose_profiles.py  # Oppose profiles: all 7 profiles, 17 new literal types, auto-detection, JSON roundtrip
   fixtures/sample.csv  # 15-row toy dataset (color, size, shape -> label A/B/C)
 benchmarks.py          # Benchmark script (sklearn + Spaceship Titanic)
 pyproject.toml         # Build config, hatchling, proprietary license
@@ -58,7 +59,7 @@ Snake's constructor accepts ONE positional argument `Knowledge` and dispatches b
 ### Constructor Signature
 
 ```python
-Snake(Knowledge, target_index=0, excluded_features_index=(), n_layers=5, bucket=250, noise=0.25, vocal=False, saved=False, progress_file=None, workers=1)
+Snake(Knowledge, target_index=0, excluded_features_index=(), n_layers=5, bucket=250, noise=0.25, vocal=False, saved=False, progress_file=None, workers=1, oppose_profile="auto")
 ```
 
 **Defaults that matter:**
@@ -69,6 +70,7 @@ Snake(Knowledge, target_index=0, excluded_features_index=(), n_layers=5, bucket=
 - `saved=False` — only used in CSV flow. If `True`, auto-saves to `snakeclassifier.json` after training.
 - `progress_file=None` — if set to a file path, writes JSON progress updates during training (layer/ETA info). Useful for UI progress bars.
 - `workers=1` — number of parallel workers for layer construction. `workers > 1` uses `multiprocessing.Pool` for parallel training. Each worker builds one layer with a unique RNG seed.
+- `oppose_profile="auto"` — literal generation strategy. `"auto"` scans population and picks one of 6 profiles. Can be overridden: `"balanced"`, `"linguistic"`, `"industrial"`, `"cryptographic"`, `"scientific"`, `"categorical"`.
 
 ### Production Pattern (list[dict])
 
@@ -114,7 +116,7 @@ All take a dict `X` with feature keys (NOT the target key):
 ### Save & Load
 
 ```python
-# Save — always writes v5.0.0 bucketed format
+# Save — always writes v5.2.0 bucketed format
 model.to_json("model.json")       # or any path
 model.to_json()                    # defaults to "snakeclassifier.json"
 
@@ -124,16 +126,16 @@ model = Snake("model.json")       # skips training entirely
 
 **Backwards compatibility:** If the JSON has `clauses` + `lookalikes` at top level but no `layers` key, it's v0.1 flat format. `from_json` wraps it into a single ELSE bucket automatically. No migration needed.
 
-**JSON structure (v5.0.0):**
+**JSON structure (v5.2.0):**
 ```json
 {
-  "version": "5.0.0",
+  "version": "5.2.0",
   "population": [...],           // list of dicts (training data)
   "header": ["target", "f1", ...],
   "target": "target",            // target column name
   "targets": [...],              // target values array (parallel to population)
   "datatypes": ["T", "N", ...],  // B=binary, I=integer, N=numeric, T=text, J=complex JSON (dict/list)
-  "config": {"n_layers": 5, "bucket": 250, "noise": 0.25, "vocal": false, "workers": 1},
+  "config": {"n_layers": 5, "bucket": 250, "noise": 0.25, "vocal": false, "workers": 1, "oppose_profile": "balanced"},
   "layers": [...],               // bucketed layer data
   "log": "..."                   // training log string
 }
@@ -347,7 +349,7 @@ snake info model.json
 ## Testing
 
 ```bash
-pytest                                # runs all 192 tests
+pytest                                # runs all 254 tests
 pytest tests/test_snake.py            # input modes, save/load, augmented, vocal, dedup, parallel training
 pytest tests/test_buckets.py          # bucket chain, noise, routing, audit, dedup
 pytest tests/test_core_algorithm.py   # oppose, construct_clause, construct_sat
@@ -359,9 +361,10 @@ pytest tests/test_audit.py            # Routing AND, Lookalike AND, plain text a
 pytest tests/test_stress.py           # stress tests, batch equivalence
 pytest tests/test_ultimate_stress.py  # extended stress tests
 pytest tests/test_meta.py             # Meta error classifier: labels, save/load, predictions, CSV export
+pytest tests/test_oppose_profiles.py  # oppose profiles, new literal types, auto-detection, JSON roundtrip
 ```
 
-194 tests across 11 files. Tests use `tests/fixtures/sample.csv` (15 rows, 3 classes). All tests use small `n_layers` (1-3) and `bucket` (3-5) for speed.
+236 tests across 11 files. Tests use `tests/fixtures/sample.csv` (15 rows, 3 classes). All tests use small `n_layers` (1-3) and `bucket` (3-5) for speed.
 
 ## Stochastic Behavior
 
@@ -536,78 +539,6 @@ The audit system produces two AND statements per layer:
 ### END AUDIT ###
 ```
 
-## Meta Error Classifier
-
-Meta learns WHERE a base Snake model fails by cross-validated error labeling. Lives in `algorithmeai/meta.py` (~250 lines).
-
-### Quick Reference
-
-```python
-from algorithmeai import Meta
-
-# Train — expensive (n_runs x n_splits ephemeral models). Use workers=10.
-meta = Meta(data, target_index="survived",
-            n_layers=7, bucket=400, noise=0.25, workers=10,
-            n_splits=40, n_runs=2, split_ratio=0.8,
-            agreement_threshold=0.55,
-            error_layers=20, error_bucket=20, vocal=True)
-
-# Predict error type
-meta.get_prediction(X)    # "FN"
-meta.get_probability(X)   # {"TP": 0.1, "FN": 0.6, ...}
-meta.summary()            # label distribution
-
-# Save / load (writes 2 files: meta.json + meta_error_model.json)
-meta.to_json("meta.json")
-meta = Meta("meta.json")
-```
-
-### Labels
-
-- **Binary (2 classes):** TP, TN, FP, FN, NS (not stable). Positive class = minority.
-- **Multiclass (3+ classes):** R1-R5 (rank of correct class), W (wrong), NS.
-
-### Constructor
-
-```python
-Meta(Knowledge, target_index=0, excluded_features_index=(),
-     n_layers=5, bucket=250, noise=0.25, workers=1,
-     n_splits=25, n_runs=2, split_ratio=0.8,
-     error_layers=7, error_bucket=50, vocal=False)
-```
-
-`Knowledge` through `workers` = ephemeral split model params. `n_splits`, `n_runs`, `split_ratio` = labeling config. `error_layers`, `error_bucket` = error classifier params.
-
-### Key attributes
-
-`population`, `target`, `labels` (parallel to population), `label_counts` (Counter), `is_binary`, `positive_class` (minority class), `agreement_rate`, `error_model` (Snake instance).
-
-### Methods
-
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `get_prediction(X)` | `str` | Error type — auto-casts feature types |
-| `get_probability(X)` | `dict` | Error type probabilities — auto-casts types |
-| `to_list()` | `list[dict]` | Population with `error_type` column |
-| `to_csv(path)` | `None` | Write augmented population to CSV |
-| `to_json(path)` | `None` | Save Meta + error model (two files) |
-| `summary()` | `str` | Label distribution |
-
-### Flip logic
-
-```python
-base_pred = base.get_prediction(X)
-error_prob = meta.get_probability(X)
-if error_prob.get("FN", 0) > 0.70:
-    base_pred = meta.positive_class  # flip to positive
-```
-
-4 flip sources: FN direct, FP direct, TP contradiction, TN contradiction. Contradiction flips (TP/TN) tend to outperform direct flips. Always evaluate all 4 on held-out data.
-
-### Config guidance
-
-`n_splits=30-40, n_runs=2, split_ratio=0.8` for majority voting. `error_layers=15-20, error_bucket=20-25` for error model capacity. The error model strips the original target column from training (v4.4.4 fix) — without this, it collapses to TN-majority.
-
 ## Things That Will Bite You
 
 1. **The banner prints to stdout with `vocal=True` only.** Set `vocal=False` to suppress.
@@ -630,6 +561,21 @@ if error_prob.get("FN", 0) > 0.70:
 
 ## Changelog
 
+### v5.2.0 (Mar 2026)
+
+- **7 oppose profiles**: `auto`, `balanced`, `linguistic`, `industrial`, `cryptographic`, `scientific`, `categorical`. Each profile is a substitute `oppose()` function with tuned probability weights across 6 text literal families + 5 numeric literal families. Original `oppose()` untouched.
+- **17 new literal types** (24 total): LEV (Levenshtein distance), JAC (Jaccard bigrams), PFX/SFX (prefix/suffix length), TUC/TDC/TSC (charclass counts), ENT (Shannon entropy), HEX (hex ratio), REP (repeat period score), CFC (char freq chi-squared), ND (digit count), NZ (z-score), NL (log-scale midpoint), NMG (magnitude order). All supported in `apply_literal`, `_format_literal_text`, and `_accel.pyx`.
+- **Auto-detection**: `_detect_profile()` scans population text features for avg length, length variance, digit ratio, uppercase ratio, special char ratio, delimiter density. Pure numeric → scientific, long varied text → linguistic, short codes with digits → industrial, high special chars → cryptographic, many delimiters → categorical, mixed/unclear → balanced.
+- **`oppose_profile` parameter**: `Snake(..., oppose_profile="auto")` (default). Stored in JSON config, restored on load. Old models default to original `oppose()`.
+- **`construct_clause` and `build_condition`** now use `self._active_oppose` (profile-selected) instead of `self.oppose`. Worker processes receive profile + col_stats via initializer.
+- **String ops capped at 32 chars**: `_levenshtein`, `_jaccard_bigrams`, `_repeat_period_score` all truncate inputs to 32 chars max. Keeps new literal types within ~1.5x of existing ones for training speed.
+- **Cython**: All 17 new literal types + C-level helpers (`_levenshtein_c`, `_entropy_c`, `_hex_ratio_c`, etc.) implemented in `_accel.pyx`.
+- **FA/TA single-char matching** restored in `_gen_text_substring`: character-level discrimination (chars unique to T or F) now pooled with separator-based tokens. This is the pattern that gives original `oppose()` 66.8% single-char literals.
+- **Oppose type formalism**: `oppose_types.snake` — complete DSL specifying all 30 literal types (measures, oppose rules, eval rules, format templates) + 7 profile weight vectors. Human-readable, serves as the single source of truth.
+- **Meta classifier removed** — experimental, unused in production. `algorithmeai/meta.py` and `tests/test_meta.py` deleted. `__init__.py` no longer exports Meta.
+- **Spaceship Titanic results**: industrial 78.0% / 0.8038 AUROC (vs original 77.2% / 0.7985). Balanced best AUROC 0.8093. Breast Cancer: scientific 98.2% / 0.9987 (vs original 96.5%).
+- **236 tests** across 11 files (62 new profile tests, 20 Meta tests removed).
+
 ### v5.0.0 (Feb 2026)
 
 - **Lookalike origin labeling**: Each lookalike now carries `"c"` (core) or `"n"` (noise) origin. New method `get_lookalikes_labeled(X)` returns `[global_idx, target_value, condition, origin]` per lookalike. Enables weighted probability computation with `(w_c, w_n)` integer weights.
@@ -639,11 +585,7 @@ if error_prob.get("FN", 0) > 0.70:
 
 ### v4.4.4 (Feb 2026)
 
-- **Meta target leak fix (critical)**: `_train_error_model()` now strips the original target column from error model training data. Previously, the target (e.g. `Survived`) was passed as a feature to the error Snake — the model learned `Survived=1 → TP` (trivially correct during training) but at inference time the target is unknown, so all target-based clauses failed via `apply_literal` returning `False` for missing keys, collapsing predictions to majority-class TN. With the fix, the error model learns from actual features (Sex, Pclass, Age, etc.) that are available at inference time.
-- **Titanic benchmark results**: With the leak fix + tuned parameters (`n_layers=7, bucket=400, noise=0.25, n_splits=40, n_runs=2, split_ratio=0.8, agreement_threshold=0.55, error_layers=20, error_bucket=20`), Meta produces quality flip signal: 8 combined flips at 85.7% precision, net +5, +2.79pp over base accuracy. TP_contradict and TN_contradict are the primary sources. Before the fix: 0-1 flips, TN predictions dominated 87%+ of test output.
-- **Meta error classifier**: `Meta` class (`algorithmeai/meta.py`, ~250 lines) — cross-validated error labeling (binary: TP/TN/FP/FN/NS, multiclass: R1-R5/W/NS) + error-type Snake classifier. Accepts same input formats as Snake. Save/load via `to_json`/`Meta("meta.json")`.
-- **Auto type-casting**: `Meta.get_prediction(X)` and `get_probability(X)` auto-cast feature types via `_cast_features()`, avoiding the `TypeError` gotcha when passing strings for numeric features.
-- **194 tests**: Extended from 174 to 194 across 11 files (added 18 Meta tests + 2 target-leak regression tests).
+- **194 tests**: Extended from 174 to 194 across 11 files.
 
 ### v4.4.2 (Feb 2026)
 

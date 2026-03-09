@@ -20,4 +20,5 @@ except ImportError:
 
 setup(
     ext_modules=ext_modules,
+    packages=["algorithmeai"],
 )

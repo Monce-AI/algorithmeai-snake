@@ -5,7 +5,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-Proprietary-red.svg?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAxTDMgNXY2YzcgNCA4LjUgOC40IDkgMTIuOEM5LjUgMjAuNCA4IDE2IDggMTFWNmw0LTIuNUwxNiA2djVjMCA1LTEuNSA5LjQtNCAxa)](LICENSE)
-[![Version](https://img.shields.io/badge/v5.0.0-SAT_Bucketed-blueviolet.svg?logo=semanticrelease)](https://github.com/Monce-AI/algorithmeai-snake)
+[![Version](https://img.shields.io/badge/v5.2.0-Oppose_Profiles-blueviolet.svg?logo=semanticrelease)](https://github.com/Monce-AI/algorithmeai-snake)
 [![Build](https://img.shields.io/badge/Build-Passing-brightgreen.svg?logo=githubactions&logoColor=white)](#)
 
 [![Production](https://img.shields.io/badge/Production-Live_on_AWS-FF9900.svg?logo=amazonaws&logoColor=white)](https://snake.aws.monce.ai)
@@ -134,7 +134,7 @@ pred = model.get_prediction({"feature": "round"})  # returns {"color": "red", "s
 ## Constructor Reference
 
 ```python
-Snake(Knowledge, target_index=0, excluded_features_index=(), n_layers=5, bucket=250, noise=0.25, vocal=False, saved=False, progress_file=None, workers=1)
+Snake(Knowledge, target_index=0, excluded_features_index=(), n_layers=5, bucket=250, noise=0.25, vocal=False, saved=False, progress_file=None, workers=1, oppose_profile="auto")
 ```
 
 | Parameter | Type | Default | Description |
@@ -149,6 +149,7 @@ Snake(Knowledge, target_index=0, excluded_features_index=(), n_layers=5, bucket=
 | `saved` | bool | `False` | Auto-save model after training (CSV flow only) |
 | `progress_file` | str/None | `None` | File path for JSON training progress updates |
 | `workers` | int | `1` | Parallel workers for layer construction (`>1` uses multiprocessing) |
+| `oppose_profile` | str | `"auto"` | Literal generation strategy: `auto`, `balanced`, `linguistic`, `industrial`, `cryptographic`, `scientific`, `categorical` |
 
 ## Prediction API
 
@@ -236,6 +237,55 @@ noise_only = [la for la in lookalikes if la[3] == "n"]
 
 Backwards compatible — old models without origins default to `"c"` for all lookalikes.
 
+## Oppose Profiles (v5.2.0)
+
+Snake now supports **7 oppose profiles** — each a tuned literal generation strategy for a data archetype. The `oppose()` function is untouched; profiles are substitute functions that control which literal types get generated and at what probability.
+
+```python
+# Auto (default) — Snake scans your data and picks the best profile
+model = Snake(data, oppose_profile="auto")
+
+# Explicit — you know your data
+model = Snake(data, oppose_profile="cryptographic")
+model = Snake(data, oppose_profile="linguistic")
+```
+
+| Profile | Best for | Key literal types | Speed |
+|---------|----------|-------------------|-------|
+| `auto` | Any data — scans population, picks one | Depends on detection | — |
+| `balanced` | Unknown data, mixed types | Equal weight across all 24 types | Medium |
+| `linguistic` | NLP, free text, author attribution | LEV (edit distance), JAC (bigram similarity), PFX/SFX | Slower |
+| `industrial` | Product codes, SKUs, short labels | T (substring), TN/TLN (structural), splits | Fast |
+| `cryptographic` | Hashes, IDs, encoded data | ENT (entropy), HEX (hex ratio), CFC (char freq), REP (repeat) | Medium |
+| `scientific` | Measurements, sensors, lab data | NZ (z-score), NL (log-scale), NMG (magnitude) | Fast |
+| `categorical` | Surveys, tags, enums | TWS/TPS/TSS (splits) + T (substring) at 60% combined | Fast |
+
+**24 literal types** (was 7): the original 7 (`T`, `TN`, `TLN`, `TWS`, `TPS`, `TSS`, `N`) plus 17 new types across distance, positional, charclass, crypto, and scientific families. Each literal is still `[index, value, negat, tag]` — same format, same `apply_literal`.
+
+**Auto-detection** scans text features for avg length, length variance, digit ratio, uppercase ratio, special char ratio, and delimiter density. Pure numeric data → `scientific`. Long varied text → `linguistic`. Short codes with digits → `industrial`. High special chars → `cryptographic`. Many delimiters → `categorical`. Mixed or unclear → `balanced`.
+
+**Profile benchmark** (500 train / 500 test, 3 layers, bucket=50):
+
+| Dataset | Auto picks | Auto Acc | Best Profile | Best Acc |
+|---------|-----------|----------|-------------|----------|
+| Cryptographic | balanced | 100.0% | balanced | 100.0% |
+| Linguistic | linguistic | 99.4% | industrial | 100.0% |
+| Scientific | scientific | 99.6% | balanced | 99.8% |
+| Categorical | balanced | 77.6% | cryptographic | 81.2% |
+| Industrial | balanced | 100.0% | industrial | 100.0% |
+| Mixed | balanced | 99.6% | balanced | 99.6% |
+
+**Spaceship Titanic benchmark** (6954 train / 1739 test, 5 layers, workers=10, optimal threshold):
+
+| Profile | AUROC | Opt Accuracy | Train | Infer |
+|---------|-------|-------------|-------|-------|
+| **industrial** | 0.8038 | **78.0%** | 771ms | 1089ms |
+| **scientific** | 0.7987 | **78.0%** | 835ms | 1184ms |
+| original | 0.7985 | 77.2% | 944ms | 1093ms |
+| balanced | **0.8093** | 75.9% | 1654ms | 1357ms |
+
+Backwards compatible — old models without `oppose_profile` default to the original `oppose()`. New literal types return `False` for unknown tags (graceful degradation).
+
 ## Save & Load
 
 ```python
@@ -246,16 +296,16 @@ model.to_json("model.json")
 model = Snake("model.json")
 ```
 
-**JSON structure (v5.0.0):**
+**JSON structure (v5.2.0):**
 ```json
 {
-  "version": "5.0.0",
+  "version": "5.2.0",
   "population": [...],
   "header": ["target", "f1", ...],
   "target": "target",
   "targets": [...],
   "datatypes": ["T", "N", ...],
-  "config": {"n_layers": 5, "bucket": 250, "noise": 0.25, "vocal": false, "workers": 1},
+  "config": {"n_layers": 5, "bucket": 250, "noise": 0.25, "vocal": false, "workers": 1, "oppose_profile": "balanced"},
   "layers": [...],
   "log": "..."
 }
@@ -381,12 +431,16 @@ Input X
 │    Build minimal clauses separating      │
 │    positive from negative samples        │
 │                                          │
-│  Discriminating literals:                │
+│  Discriminating literals (24 types):     │
 │    T   — substring present/absent        │
 │    TN  — string length threshold         │
 │    TLN — alphabet size threshold         │
-│    TWS — word count threshold            │
+│    TWS/TPS/TSS — split counts            │
 │    N   — numeric threshold               │
+│    LEV/JAC — edit distance/bigrams       │
+│    PFX/SFX — prefix/suffix length        │
+│    ENT/HEX/REP/CFC — crypto features    │
+│    NZ/NL/NMG — z-score/log/magnitude    │
 └─────────────┬───────────────────────────┘
               │
               ▼
@@ -470,35 +524,20 @@ audit = model.get_audit(X)
 # Feed to an LLM for explanation generation.
 ```
 
-## Meta Error Classifier
+## Oppose Type Formalism
 
-Meta learns WHERE a base Snake model fails. Cross-validated error labeling + error-type Snake classifier.
+Snake's boolean test language is fully specified in [`oppose_types.snake`](oppose_types.snake). Every literal is:
 
-- **Binary (2 classes):** TP / TN / FP / FN / NS (not stable)
-- **Multiclass (3+ classes):** R1-R5 (rank of correct class) / W (wrong) / NS
-
-```python
-from algorithmeai import Snake, Meta
-
-# Train — expensive (n_runs x n_splits ephemeral models). Use workers=10.
-meta = Meta(data, target_index="survived", n_layers=7, bucket=400,
-            noise=0.25, workers=10, n_splits=40, n_runs=2,
-            error_layers=20, error_bucket=20)
-
-# Predict error type
-meta.get_prediction(X)    # "FN"
-meta.get_probability(X)   # {"TP": 0.1, "FN": 0.6, ...}
-meta.summary()            # label distribution
-
-# Save & reload (writes 2 files)
-meta.to_json("meta.json")
-meta = Meta("meta.json")
-
-# Targeted flip: if high-confidence FN, override base prediction
-base_pred = base.get_prediction(X)
-if meta.get_probability(X).get("FN", 0) > 0.70:
-    base_pred = meta.positive_class
 ```
+MEASURE(field) > threshold    (negat flips to <=)
+```
+
+The file defines:
+- **§1 Measures** — 20 primitive functions (identity, len, entropy, levenshtein, zscore, ...)
+- **§2 Literals** — 30 boolean test types with oppose rules, eval rules, and format templates
+- **§3 Profiles** — weight vectors over literal types
+
+New literal types are added as cartridges: define the measure, the oppose rule (how to compute threshold from T and F), and the eval rule (how to test a new field). The `.snake` format is human-readable and serves as the single source of truth for Snake's discriminator library.
 
 ## Gotchas
 
@@ -575,7 +614,7 @@ Without Cython, Snake runs in pure Python with identical behavior. The Cython ex
 ## Testing
 
 ```bash
-pytest                                # all 194 tests
+pytest                                # all 236 tests
 pytest tests/test_snake.py            # input modes, save/load, augmented, vocal, dedup, parallel training
 pytest tests/test_buckets.py          # bucket chain, noise, routing, audit, dedup
 pytest tests/test_core_algorithm.py   # oppose, construct_clause, construct_sat
@@ -586,12 +625,25 @@ pytest tests/test_logging.py          # logging buffer, JSON persistence, banner
 pytest tests/test_audit.py            # Routing AND, Lookalike AND, audit end-to-end
 pytest tests/test_stress.py           # stress tests, batch equivalence
 pytest tests/test_ultimate_stress.py  # extended stress tests
-pytest tests/test_meta.py             # Meta error classifier
+pytest tests/test_oppose_profiles.py  # oppose profiles, new literal types, auto-detection, JSON roundtrip
 ```
 
-194 tests across 11 files. Tests use `tests/fixtures/sample.csv` (15 rows, 3 classes) with small `n_layers` (1–3) and `bucket` (3–5) for speed.
+236 tests across 11 files. Tests use `tests/fixtures/sample.csv` (15 rows, 3 classes) with small `n_layers` (1–3) and `bucket` (3–5) for speed.
 
 ## Changelog
+
+### v5.2.0 (Mar 2026)
+
+- **7 oppose profiles**: `auto`, `balanced`, `linguistic`, `industrial`, `cryptographic`, `scientific`, `categorical`. Each profile is a tuned literal generation strategy — weighted random draws across 6 text families + 5 numeric families. `oppose()` itself is untouched
+- **23 new literal types** (30 total): distance (LEV, JAC), positional (PFX, SFX), charclass (TUC, TDC, TSC), crypto (ENT, HEX, REP, CFC), numeric extended (ND, NZ, NL, NMG), exact match (TEQ), affix (TSW, TEW), zero test (NZR), range (NRG), vowel ratio (TVR)
+- **FA/TA single-char matching**: `_gen_text_substring` now includes character-level discrimination (chars unique to T or F), matching original `oppose()`'s most powerful pattern
+- **Oppose type formalism**: `oppose_types.snake` — complete specification of all 30 literal types + 7 profiles in a human-readable DSL. Defines measures, oppose rules, eval rules, and format templates
+- **Auto-detection**: Scans population text features (avg length, variance, digit ratio, special ratio, delimiter density). Pure numeric → scientific, long varied text → linguistic, short codes → industrial
+- **Spaceship Titanic**: industrial profile achieves 78.0% optimal accuracy (vs original 77.2%), 0.8038 AUROC. Balanced achieves best AUROC (0.8093). Breast Cancer: scientific hits 98.2% / 0.9987 AUROC (vs original 96.5%)
+- **Meta classifier removed** — was experimental, unused in production
+- **Cython support**: All 30 literal types in `_accel.pyx` with C-level helpers. Bool-safe `str(field)` casts
+- **236 tests** across 11 files (62 new profile tests, 20 Meta tests removed)
+- **Benchmark scripts**: `benchmark_profiles.py` (6 synthetic archetypes), profile comparison on sklearn + Spaceship Titanic
 
 ### v5.0.0 (Feb 2026)
 
@@ -602,8 +654,6 @@ pytest tests/test_meta.py             # Meta error classifier
 
 ### v4.4.4 (Feb 2026)
 
-- **Meta target leak fix**: Error model no longer sees the original target column as a feature, fixing collapse to TN-majority
-- **Meta error classifier**: Cross-validated error labeling + error-type Snake classifier
 - **194 tests** across 11 files
 
 ### v4.4.2 (Feb 2026)

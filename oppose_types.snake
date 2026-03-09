@@ -1,0 +1,373 @@
+# Snake Oppose Type Registry v5.2.0
+# ===================================
+#
+# This file is the complete specification of Snake's boolean test language.
+# It defines three things:
+#   1. MEASURES   — pure functions on a field value → scalar
+#   2. LITERALS   — boolean tests built from measures
+#   3. PROFILES   — oppose strategies built from literals
+#
+# Everything Snake can ever test is in this file.
+# A profile is loadable: Snake("data.csv", oppose_profile="my_profile.snake")
+#
+# ─────────────────────────────────────────────────────────────────────────
+
+
+# =============================================================
+#  §1  MEASURES — the primitive functions
+# =============================================================
+#
+# A measure maps a field value to a scalar. These are Snake's atoms.
+# Every literal is: measure(field) <op> threshold.
+#
+# NUMERIC MEASURES (field is float/int):
+#
+#   identity(x)          = x
+#   slog(x)              = sign(x) * ln(|x| + 1)
+#   mag(x)               = floor(log10(|x|))
+#   zscore(x, μ, σ)      = (x - μ) / σ
+#
+# STRING MEASURES (field is str):
+#
+#   len(s)               = len(s)
+#   uniq(s)              = |set(s)|
+#   count(s, sep)         = len(s.split(sep))
+#   upper(s)             = Σ c.isupper()
+#   digits(s)            = Σ c.isdigit()
+#   special(s)           = Σ (not c.isalnum() and not c.isspace())
+#   has(s, tok)          = tok in s                         → boolean
+#   lev(s, ref)          = levenshtein(s[:32], ref[:32])    → int
+#   jac(s, ref)          = jaccard_bigrams(s[:32], ref[:32])→ float[0,1]
+#   pfx(s, ref)          = common_prefix_len(s, ref)        → int
+#   sfx(s, ref)          = common_suffix_len(s, ref)        → int
+#   ent(s)               = shannon_entropy(s)               → float
+#   hex(s)               = hex_char_ratio(s)                → float[0,1]
+#   rep(s)               = repeat_period_score(s[:32])      → float[0,1]
+#   chi(s, ref_freq)     = char_freq_chi_squared(s, ref_freq) → float
+#
+# THRESHOLD CONSTRUCTORS (used at oppose time):
+#
+#   mid(a, b)            = (a + b) / 2
+#   token(t, f)          → discriminating substring or single char
+#   charfreq(s)          → {char: freq} dict from s
+
+
+# =============================================================
+#  §2  LITERALS — the 24 boolean tests
+# =============================================================
+#
+# Format:
+#   [TAG]  description
+#     domain:   text | numeric
+#     value:    what gets stored in literal[1]
+#     negat:    what gets stored in literal[2]
+#     eval:     field × value → bool  (this is the negat=False form)
+#     flip:     the negat=True form   (always the logical complement)
+#     format:   human-readable string
+#     oppose:   how to compute (value, negat) from t=T[h], f=F[h]
+#
+
+# ── Numeric core ──────────────────────────────────────────────
+
+[N]
+  domain:   numeric
+  value:    float
+  oppose:   value = mid(t, f);  negat = t > f
+  eval:     identity(field) > value
+  format:   "{h}" > {value}
+
+[ND]
+  domain:   numeric
+  value:    float
+  oppose:   value = mid(digits(str(t)), digits(str(f)));  negat = digits(str(t)) > digits(str(f))
+  eval:     digits(str(field)) > value
+  format:   digits("{h}") > {value}
+
+[NZ]
+  domain:   numeric
+  value:    [μ, σ, threshold]
+  oppose:   μ,σ = col_stats;  value = [μ, σ, mid(zscore(t,μ,σ), zscore(f,μ,σ))];  negat = zscore(t,μ,σ) > zscore(f,μ,σ)
+  eval:     zscore(field, μ, σ) >= threshold
+  format:   zscore("{h}") >= {threshold}
+
+[NL]
+  domain:   numeric
+  value:    float
+  oppose:   value = mid(slog(t), slog(f));  negat = slog(t) > slog(f)
+  eval:     slog(field) > value
+  format:   log("{h}") > {value}
+
+[NMG]
+  domain:   numeric
+  value:    float
+  oppose:   value = mid(mag(t), mag(f));  negat = mag(t) > mag(f)
+  eval:     mag(field) > value
+  format:   magnitude("{h}") > {value}
+
+# ── Text: substring ───────────────────────────────────────────
+
+[T]
+  domain:   text
+  value:    str (token or single char)
+  oppose:   value = token(t, f);  negat = token_from_f
+  eval:     has(field, value)
+  format:   "{h}" contains "{value}"
+  note:     token() tries in order:
+            1. chars in set(t) not in f  → single char, negat=False
+            2. chars in set(f) not in t  → single char, negat=True
+            3. separator-split tokens from t not in f  → negat=False
+            4. separator-split tokens from f not in t  → negat=True
+            5. full t if t not in f  → negat=False
+            6. full f if f not in t  → negat=True
+            all candidates pooled, choice() picks one
+
+# ── Text: structural ──────────────────────────────────────────
+
+[TN]
+  domain:   text
+  value:    float
+  oppose:   value = mid(len(t), len(f));  negat = len(t) > len(f)
+  eval:     len(field) > value
+  format:   len("{h}") > {value}
+
+[TLN]
+  domain:   text
+  value:    float
+  oppose:   value = mid(uniq(t), uniq(f));  negat = uniq(t) > uniq(f)
+  eval:     uniq(field) > value
+  format:   alphabet("{h}") > {value}
+
+# ── Text: splits ──────────────────────────────────────────────
+
+[TWS]
+  domain:   text
+  value:    float
+  oppose:   value = mid(count(t," "), count(f," "));  negat = count(t," ") > count(f," ")
+  eval:     count(field, " ") > value
+  format:   words("{h}") > {value}
+
+[TPS]
+  domain:   text
+  value:    float
+  oppose:   value = mid(count(t,","), count(f,","));  negat = count(t,",") > count(f,",")
+  eval:     count(field, ",") > value
+  format:   parts("{h}") > {value}
+
+[TSS]
+  domain:   text
+  value:    float
+  oppose:   value = mid(count(t,"."), count(f,"."));  negat = count(t,".") > count(f,".")
+  eval:     count(field, ".") > value
+  format:   sentences("{h}") > {value}
+
+# ── Text: charclass ───────────────────────────────────────────
+
+[TUC]
+  domain:   text
+  value:    float
+  oppose:   value = mid(upper(t), upper(f));  negat = upper(t) > upper(f)
+  eval:     upper(field) > value
+  format:   uppercase("{h}") > {value}
+
+[TDC]
+  domain:   text
+  value:    float
+  oppose:   value = mid(digits(t), digits(f));  negat = digits(t) > digits(f)
+  eval:     digits(field) > value
+  format:   digit_chars("{h}") > {value}
+
+[TSC]
+  domain:   text
+  value:    float
+  oppose:   value = mid(special(t), special(f));  negat = special(t) > special(f)
+  eval:     special(field) > value
+  format:   special_chars("{h}") > {value}
+
+# ── Text: distance ────────────────────────────────────────────
+
+[LEV]
+  domain:   text
+  value:    [ref, threshold]
+  oppose:   value = [t, mid(lev(t,f), 0)];  negat = len(t) < len(f)
+  eval:     lev(field, ref) > threshold
+  format:   levenshtein("{h}", "{ref}") > {threshold}
+
+[JAC]
+  domain:   text
+  value:    [ref, threshold]
+  oppose:   value = [t, mid(jac(t,f), 1)];  negat = True
+  eval:     jac(field, ref) >= threshold
+  format:   jaccard("{h}", "{ref}") >= {threshold}
+
+# ── Text: positional ──────────────────────────────────────────
+
+[PFX]
+  domain:   text
+  value:    [ref, threshold]
+  oppose:   value = [t, mid(pfx(t,f), len(t))];  negat = True
+  eval:     pfx(field, ref) >= threshold
+  format:   prefix("{h}", "{ref}") >= {threshold}
+
+[SFX]
+  domain:   text
+  value:    [ref, threshold]
+  oppose:   value = [t, mid(sfx(t,f), len(t))];  negat = True
+  eval:     sfx(field, ref) >= threshold
+  format:   suffix("{h}", "{ref}") >= {threshold}
+
+# ── Text: crypto ──────────────────────────────────────────────
+
+[ENT]
+  domain:   text
+  value:    float
+  oppose:   value = mid(ent(t), ent(f));  negat = ent(t) > ent(f)
+  eval:     ent(field) > value
+  format:   entropy("{h}") > {value}
+
+[HEX]
+  domain:   text
+  value:    float
+  oppose:   value = mid(hex(t), hex(f));  negat = hex(t) > hex(f)
+  eval:     hex(field) > value
+  format:   hex_ratio("{h}") > {value}
+
+[REP]
+  domain:   text
+  value:    float
+  oppose:   value = mid(rep(t), rep(f));  negat = rep(t) > rep(f)
+  eval:     rep(field) > value
+  format:   repeat_score("{h}") > {value}
+
+[CFC]
+  domain:   text
+  value:    [ref_freq, threshold]
+  oppose:   value = [charfreq(t), mid(chi(f, charfreq(t)), 0)];  negat = False
+  eval:     chi(field, ref_freq) >= threshold
+  format:   charfreq_chi("{h}") >= {threshold}
+
+
+# ── Numeric: extended ──────────────────────────────────────────
+
+[NZR] zero test
+  domain:   numeric
+  value:    0
+  oppose:   value = 0;  negat = (t == 0)
+  eval:     identity(field) == 0
+  flip:     identity(field) != 0
+  format:   "{h}" == 0
+  note:     The most powerful test for spending columns.
+            CryoSleep=True ↔ RoomService=0. Binary zero/nonzero
+            is often more discriminating than midpoint splits.
+
+[NRG] numeric range (bucket)
+  domain:   numeric
+  value:    [lo, hi]
+  oppose:   lo = min(t,f); hi = max(t,f);  value = [lo, hi];  negat = (t < f)
+  eval:     lo < field <= hi
+  format:   {lo} < "{h}" <= {hi}
+  note:     Range membership. Useful for age brackets, price tiers.
+
+# ── Text: exact match ─────────────────────────────────────────
+
+[TEQ] exact equality
+  domain:   text
+  value:    str
+  oppose:   value = t;  negat = False
+  eval:     field == value
+  flip:     field != value
+  format:   "{h}" == "{value}"
+  note:     For features with few unique values (HomePlanet, CryoSleep).
+            More precise than substring — "True" in "TrueBlood" is a
+            false positive, "True" == "TrueBlood" is not.
+
+# ── Text: affix ───────────────────────────────────────────────
+
+[TSW] starts with
+  domain:   text
+  value:    str (prefix)
+  oppose:   value = common_start_token(t, f);  negat = field_is_f
+  eval:     field.startswith(value)
+  format:   "{h}" starts with "{value}"
+  note:     For structured strings: "TRAPPIST-1e" starts with "TR".
+            oppose picks a prefix of t that f doesn't start with (or vice versa).
+
+[TEW] ends with
+  domain:   text
+  value:    str (suffix)
+  oppose:   value = common_end_token(t, f);  negat = field_is_f
+  eval:     field.endswith(value)
+  format:   "{h}" ends with "{value}"
+
+# ── Text: character ratio ─────────────────────────────────────
+
+[TVR] vowel ratio
+  domain:   text
+  value:    float
+  oppose:   value = mid(vowel_ratio(t), vowel_ratio(f));  negat = vowel_ratio(t) > vowel_ratio(f)
+  eval:     vowel_ratio(field) > value
+  format:   vowel_ratio("{h}") > {value}
+  note:     vowel_ratio = count(vowels) / len(s). Distinguishes
+            "Europa" (0.67) from "Mars" (0.25) from "Earth" (0.40).
+
+
+# =============================================================
+#  §3  PROFILES — oppose strategies
+# =============================================================
+#
+# A profile has two parts:
+#   text:     weighted list of text literal tags
+#   numeric:  weighted list of numeric literal tags
+#
+# On each oppose(T, F) call:
+#   1. Pick a differing feature at random
+#   2. If text:    draw from text weights, try generating, fallback to T
+#   3. If numeric: draw from numeric weights, try generating, fallback to N
+#
+# Weights are relative (not normalized). W=0 means never try.
+# Fallback is always T (text) or N (numeric) — guaranteed to produce a literal.
+#
+# FLOW:
+#   oppose(T, F):
+#     candidates = features where T[h] ≠ F[h]
+#     index = random.choice(candidates)
+#     if text:
+#       tag = weighted_draw(text_weights)
+#       literal = generate(tag, index, T, F)
+#       if literal is None: literal = generate(T, index, T, F)  # fallback
+#       return literal
+#     if numeric:
+#       tag = weighted_draw(numeric_weights)
+#       literal = generate(tag, index, T, F)
+#       if literal is None: literal = generate(N, index, T, F)  # fallback
+#       return literal
+
+[profile:original]
+  # The original oppose() — coin flip between structural+alphabet and substring.
+  # Equivalent to: 50% uniform({TN,TLN,T_char,TWS,TPS,TSS}), 50% T_separator
+  # In practice: ~55% N, ~38% T, ~3% TLN, ~3% TN on mixed data
+  text:    T:50  TN:8  TLN:8  TWS:8  TPS:8  TSS:8
+  numeric: N:100
+
+[profile:balanced]
+  text:    T:6  TN:6  TLN:6  TWS:6  TPS:6  TSS:6  TUC:6  TDC:6  TSC:6  LEV:6  JAC:6  PFX:6  SFX:6  ENT:6  HEX:6  REP:6  CFC:6
+  numeric: N:30  ND:30  NZ:15  NL:15  NMG:10
+
+[profile:linguistic]
+  text:    LEV:20  JAC:15  PFX:10  SFX:10  TUC:8  TDC:4  TSC:3  TN:8  TLN:7  TWS:5  TPS:3  TSS:2  T:5
+  numeric: N:80  ND:20
+
+[profile:industrial]
+  text:    T:40  TN:10  TLN:10  TWS:5  TPS:5  TSS:5  PFX:5  SFX:5  TUC:5  TDC:5  TSC:5
+  numeric: N:80  ND:20
+
+[profile:cryptographic]
+  text:    ENT:10  HEX:5  REP:5  CFC:5  TUC:8  TDC:4  TSC:3  TN:13  TLN:12  LEV:8  JAC:7  TWS:5  TPS:5  PFX:5  SFX:5  T:5
+  numeric: N:80  ND:20
+
+[profile:scientific]
+  text:    T:40  TN:30  TLN:30
+  numeric: N:40  NZ:20  NL:15  NMG:15  ND:10
+
+[profile:categorical]
+  text:    TWS:10  TPS:10  TSS:10  T:30  TN:8  TLN:7  LEV:5  JAC:5  PFX:5  SFX:5  TUC:3  TDC:1  TSC:1
+  numeric: N:80  ND:20

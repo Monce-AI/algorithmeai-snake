@@ -8,7 +8,154 @@ Install: pip install -e ".[fast]" && python setup.py build_ext --inplace
 These are standalone functions (not methods) that mirror the pure-Python
 logic in snake.py. They are conditionally imported at module level.
 """
+from libc.math cimport log2, log, fabs, floor, copysign
+from libc.stdlib cimport abs as c_abs
 
+# ---------------------------------------------------------------------------
+# String helper functions (C-speed equivalents of module-level helpers)
+# ---------------------------------------------------------------------------
+
+cdef int _levenshtein_c(str a, str b, int max_len=32):
+    """Wagner-Fischer DP, capped at max_len chars."""
+    a = a[:max_len]
+    b = b[:max_len]
+    cdef int la = len(a)
+    cdef int lb = len(b)
+    if la == 0:
+        return lb
+    if lb == 0:
+        return la
+    if la - lb > max_len // 2 or lb - la > max_len // 2:
+        return max(la, lb)
+    cdef list prev = list(range(lb + 1))
+    cdef list curr
+    cdef int i, j, cost
+    for i in range(la):
+        curr = [i + 1] + [0] * lb
+        for j in range(lb):
+            cost = 0 if a[i] == b[j] else 1
+            curr[j + 1] = min(prev[j + 1] + 1, curr[j] + 1, prev[j] + cost)
+        prev = curr
+    return prev[lb]
+
+
+cdef double _jaccard_bigrams_c(str a, str b, int max_len=32):
+    """Jaccard similarity on char bigrams, capped."""
+    a = a[:max_len]
+    b = b[:max_len]
+    if len(a) < 2 and len(b) < 2:
+        return 1.0 if a == b else 0.0
+    cdef set sa = {a[i:i+2] for i in range(max(0, len(a)-1))}
+    cdef set sb = {b[i:i+2] for i in range(max(0, len(b)-1))}
+    cdef set union = sa | sb
+    if not union:
+        return 1.0
+    return <double>len(sa & sb) / <double>len(union)
+
+
+cdef int _common_prefix_len_c(str a, str b):
+    cdef int n = min(len(a), len(b))
+    cdef int i
+    for i in range(n):
+        if a[i] != b[i]:
+            return i
+    return n
+
+
+cdef int _common_suffix_len_c(str a, str b):
+    return _common_prefix_len_c(a[::-1], b[::-1])
+
+
+cdef double _entropy_c(str s):
+    """Shannon entropy of character distribution."""
+    if not s:
+        return 0.0
+    cdef dict freq = {}
+    cdef str c
+    for c in s:
+        freq[c] = freq.get(c, 0) + 1
+    cdef int n = len(s)
+    cdef double result = 0.0
+    cdef double p
+    for cnt in freq.values():
+        p = <double>cnt / <double>n
+        result -= p * log2(p)
+    return result
+
+
+cdef double _hex_ratio_c(str s):
+    if not s:
+        return 0.0
+    cdef set hex_chars = set("0123456789abcdefABCDEF")
+    cdef int count = 0
+    cdef str c
+    for c in s:
+        if c in hex_chars:
+            count += 1
+    return <double>count / <double>len(s)
+
+
+cdef double _repeat_period_score_c(str s, int max_len=32):
+    s = s[:max_len]
+    cdef int slen = len(s)
+    if slen < 4:
+        return 0.0
+    cdef double best = 0.0
+    cdef double score
+    cdef int period, matches, i
+    for period in range(1, slen // 2 + 1):
+        matches = 0
+        for i in range(period, slen):
+            if s[i] == s[i % period]:
+                matches += 1
+        score = <double>matches / <double>(slen - period)
+        if score > best:
+            best = score
+    return best
+
+
+cdef int _count_upper_c(str s):
+    cdef int count = 0
+    cdef str c
+    for c in s:
+        if c.isupper():
+            count += 1
+    return count
+
+
+cdef int _count_digits_c(str s):
+    cdef int count = 0
+    cdef str c
+    for c in s:
+        if c.isdigit():
+            count += 1
+    return count
+
+
+cdef int _count_special_c(str s):
+    cdef int count = 0
+    cdef str c
+    for c in s:
+        if not c.isalnum() and not c.isspace():
+            count += 1
+    return count
+
+
+cdef double _signed_log_c(double x):
+    if x == 0:
+        return 0.0
+    return copysign(log(fabs(x) + 1), x)
+
+
+cdef double _mag_c(double x):
+    if x == 0:
+        return 0.0
+    return floor(log(fabs(x) + 1e-300) / log(10.0))
+
+
+# ---------------------------------------------------------------------------
+# Core inference functions
+# ---------------------------------------------------------------------------
 
 def apply_literal_fast(dict X, list literal, list header):
     """Cython version of Snake.apply_literal — returns True/False."""
@@ -22,35 +169,146 @@ def apply_literal_fast(dict X, list literal, list header):
         return False
 
     cdef object field = X[key]
+    cdef str sfield
+    cdef double dfield
+    cdef int ival
+    cdef double dval
+    cdef list vlist
+    cdef dict ref_freq
+    cdef double threshold, chi_sq, observed, expected, mu, std
 
+    # --- Original literal types ---
     if datat == "TWS":
+        sfield = str(field)
         if negat:
-            return value <= len((<str>field).split(" "))
-        return value > len((<str>field).split(" "))
+            return value <= len(sfield.split(" "))
+        return value > len(sfield.split(" "))
     elif datat == "TPS":
+        sfield = str(field)
         if negat:
-            return value <= len((<str>field).split(","))
-        return value > len((<str>field).split(","))
+            return value <= len(sfield.split(","))
+        return value > len(sfield.split(","))
     elif datat == "TSS":
+        sfield = str(field)
         if negat:
-            return value <= len((<str>field).split("."))
-        return value > len((<str>field).split("."))
+            return value <= len(sfield.split("."))
+        return value > len(sfield.split("."))
     elif datat == "TLN":
+        sfield = str(field)
         if negat:
-            return value <= len(set(<str>field))
-        return value > len(set(<str>field))
+            return value <= len(set(sfield))
+        return value > len(set(sfield))
     elif datat == "TN":
+        sfield = str(field)
         if negat:
-            return value <= len(<str>field)
-        return value > len(<str>field)
+            return value <= len(sfield)
+        return value > len(sfield)
     elif datat == "T":
+        sfield = str(field)
         if negat:
-            return value not in <str>field
-        return value in <str>field
+            return value not in sfield
+        return value in sfield
     elif datat == "N":
         if negat:
             return value <= field
         return value > field
+
+    # --- New literal types (v5.2.0) ---
+    elif datat == "ND":
+        ival = _count_digits_c(str(field))
+        return value <= ival if negat else value > ival
+    elif datat == "TUC":
+        ival = _count_upper_c(str(field))
+        return value <= ival if negat else value > ival
+    elif datat == "TDC":
+        ival = _count_digits_c(str(field))
+        return value <= ival if negat else value > ival
+    elif datat == "TSC":
+        ival = _count_special_c(str(field))
+        return value <= ival if negat else value > ival
+    elif datat == "LEV":
+        vlist = value
+        ival = _levenshtein_c(str(field), <str>vlist[0])
+        threshold = vlist[1]
+        return ival <= threshold if negat else ival > threshold
+    elif datat == "JAC":
+        vlist = value
+        dval = _jaccard_bigrams_c(str(field), <str>vlist[0])
+        threshold = vlist[1]
+        return dval >= threshold if negat else dval < threshold
+    elif datat == "PFX":
+        vlist = value
+        ival = _common_prefix_len_c(str(field), <str>vlist[0])
+        threshold = vlist[1]
+        return ival >= threshold if negat else ival < threshold
+    elif datat == "SFX":
+        vlist = value
+        ival = _common_suffix_len_c(str(field), <str>vlist[0])
+        threshold = vlist[1]
+        return ival >= threshold if negat else ival < threshold
+    elif datat == "ENT":
+        dval = _entropy_c(str(field))
+        return value <= dval if negat else value > dval
+    elif datat == "HEX":
+        dval = _hex_ratio_c(str(field))
+        return value <= dval if negat else value > dval
+    elif datat == "REP":
+        dval = _repeat_period_score_c(str(field))
+        return value <= dval if negat else value > dval
+    elif datat == "CFC":
+        vlist = value
+        ref_freq = vlist[0]
+        threshold = vlist[1]
+        sfield = str(field)
+        nf = max(len(sfield), 1)
+        f_freq = {}
+        for c in sfield:
+            f_freq[c] = f_freq.get(c, 0) + 1
+        chi_sq = 0.0
+        all_chars = set(ref_freq) | set(f_freq)
+        for c in all_chars:
+            observed = <double>f_freq.get(c, 0) / <double>nf
+            expected = ref_freq.get(c, 0.001)
+            if expected < 0.001:
+                expected = 0.001
+            chi_sq += (observed - expected) ** 2 / expected
+        return chi_sq < threshold if negat else chi_sq >= threshold
+    elif datat == "NZ":
+        vlist = value
+        mu = vlist[0]
+        std = vlist[1]
+        threshold = vlist[2]
+        dval = (<double>field - mu) / std
+        return dval >= threshold if negat else dval < threshold
+    elif datat == "NL":
+        dval = _signed_log_c(<double>field)
+        return value <= dval if negat else value > dval
+    elif datat == "NMG":
+        dval = _mag_c(<double>field)
+        return value <= dval if negat else value > dval
+    elif datat == "NZR":
+        return (field != 0) if negat else (field == 0)
+    elif datat == "NRG":
+        vlist = value
+        inside = vlist[0] < field <= vlist[1]
+        return inside if negat else not inside
+    elif datat == "TEQ":
+        sfield = str(field)
+        return (sfield != value) if negat else (sfield == value)
+    elif datat == "TSW":
+        sfield = str(field)
+        return (not sfield.startswith(value)) if negat else sfield.startswith(value)
+    elif datat == "TEW":
+        sfield = str(field)
+        return (not sfield.endswith(value)) if negat else sfield.endswith(value)
+    elif datat == "TVR":
+        sfield = str(field)
+        ival = 0
+        for c in sfield:
+            if c in "aeiouAEIOU":
+                ival += 1
+        dval = <double>ival / <double>max(len(sfield), 1)
+        return value <= dval if negat else value > dval
     return False
 
 

@@ -1,7 +1,8 @@
 import json
 import logging
+import math
 import sys
-from random import choice, sample
+from random import choice, sample, random
 from time import time
 
 try:
@@ -19,7 +20,7 @@ except ImportError:
 #                                                              #
 #    Algorithme.ai : Snake         Author : Charles Dana       #
 #                                                              #
-#    v5.0.0 — SAT-ensembled bucketed multiclass classifier     #
+#    v5.2.0 — SAT-ensembled bucketed multiclass classifier     #
 #                                                              #
 ################################################################
 
@@ -27,10 +28,111 @@ _BANNER = """################################################################
 #                                                              #
 #    Algorithme.ai : Snake         Author : Charles Dana       #
 #                                                              #
-#    v5.0.0 — SAT-ensembled bucketed multiclass classifier     #
+#    v5.2.0 — SAT-ensembled bucketed multiclass classifier     #
 #                                                              #
 ################################################################
 """
+
+# ---------------------------------------------------------------------------
+# Oppose profile constants
+# ---------------------------------------------------------------------------
+_VALID_PROFILES = ("auto", "balanced", "linguistic", "industrial",
+                   "cryptographic", "scientific", "categorical")
+
+# ---------------------------------------------------------------------------
+# Helper functions for new literal types (module-level, pure Python)
+# ---------------------------------------------------------------------------
+
+def _levenshtein(a, b, _MAX=32):
+    """Wagner-Fischer DP, space-optimized, capped at _MAX chars."""
+    a = a[:_MAX]
+    b = b[:_MAX]
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    if abs(len(a) - len(b)) > _MAX // 2:
+        return max(len(a), len(b))
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a):
+        curr = [i + 1] + [0] * len(b)
+        for j, cb in enumerate(b):
+            curr[j + 1] = min(prev[j + 1] + 1, curr[j] + 1,
+                              prev[j] + (0 if ca == cb else 1))
+        prev = curr
+    return prev[-1]
+
+
+def _jaccard_bigrams(a, b, _MAX=32):
+    """Jaccard similarity on character bigrams. Returns 0.0-1.0."""
+    a = a[:_MAX]
+    b = b[:_MAX]
+    if len(a) < 2 and len(b) < 2:
+        return 1.0 if a == b else 0.0
+    sa = {a[i:i+2] for i in range(max(0, len(a)-1))}
+    sb = {b[i:i+2] for i in range(max(0, len(b)-1))}
+    if not sa and not sb:
+        return 1.0
+    union = sa | sb
+    if not union:
+        return 1.0
+    return len(sa & sb) / len(union)
+
+
+def _common_prefix_len(a, b):
+    n = min(len(a), len(b))
+    for i in range(n):
+        if a[i] != b[i]:
+            return i
+    return n
+
+
+def _common_suffix_len(a, b):
+    return _common_prefix_len(a[::-1], b[::-1])
+
+
+def _entropy(s):
+    """Shannon entropy of string character distribution."""
+    if not s:
+        return 0.0
+    freq = {}
+    for c in s:
+        freq[c] = freq.get(c, 0) + 1
+    n = len(s)
+    return -sum((f/n) * math.log2(f/n) for f in freq.values())
+
+
+def _hex_ratio(s):
+    """Proportion of hex-valid characters."""
+    if not s:
+        return 0.0
+    hex_chars = set("0123456789abcdefABCDEF")
+    return sum(1 for c in s if c in hex_chars) / len(s)
+
+
+def _repeat_period_score(s, _MAX=32):
+    """How periodic is the string? 1.0 = perfectly repeating, 0.0 = no pattern."""
+    s = s[:_MAX]
+    if len(s) < 4:
+        return 0.0
+    best = 0.0
+    for period in range(1, len(s) // 2 + 1):
+        matches = sum(1 for i in range(period, len(s)) if s[i] == s[i % period])
+        score = matches / (len(s) - period)
+        best = max(best, score)
+    return best
+
+
+def _count_upper(s):
+    return sum(1 for c in s if c.isupper())
+
+
+def _count_digits(s):
+    return sum(1 for c in s if c.isdigit())
+
+
+def _count_special(s):
+    return sum(1 for c in s if not c.isalnum() and not c.isspace())
 
 _snake_instance_counter = 0
 
@@ -183,7 +285,7 @@ Snake() of data will provide insights
 class Snake():
     def __init__(self, Knowledge, target_index=0, excluded_features_index=(),
                  n_layers=5, bucket=250, noise=0.25, vocal=False, saved=False,
-                 progress_file=None, workers=1):
+                 progress_file=None, workers=1, oppose_profile="auto"):
         # --- logging setup ---
         global _snake_instance_counter
         _snake_instance_counter += 1
@@ -232,6 +334,8 @@ class Snake():
         self.vocal = vocal
         self.progress_file = progress_file
         self.workers = workers
+        self.oppose_profile = oppose_profile
+        self._col_stats = {}
         self._t0 = 0
         self._avg_per_layer = 0
         self._current_layer = 0
@@ -290,6 +394,7 @@ class Snake():
         self.population = pp
         unique = len(self._unique_targets())
         self.qprint(f"# Population ready: {len(pp)} samples, {unique} unique targets, {len(self.header)-1} features")
+        self._init_oppose_profile()
         self._train(saved)
 
     # ------------------------------------------------------------------
@@ -364,6 +469,7 @@ class Snake():
         unique = len(self._unique_targets())
         self.qprint(f"# Population ready: {len(pp)} samples, {unique} unique targets, {len(self.header)-1} features")
         self.qprint(f"# Deduplication: {len(rows)} rows -> {len(pp)} unique ({len(rows) - len(pp)} dropped)")
+        self._init_oppose_profile()
         self._train(False)
 
     # ------------------------------------------------------------------
@@ -477,6 +583,7 @@ class Snake():
         self.qprint(f"#   Layers:        {self.n_layers}")
         self.qprint(f"#   Bucket size:   {self.bucket}")
         self.qprint(f"#   Noise:         {self.noise}")
+        self.qprint(f"#   Profile:       {self.oppose_profile}")
         self.qprint(f"#   Vocal:         {self.vocal}")
         self.qprint(f"#")
         top_5 = sorted(target_counts, key=lambda x: -x[1])[:5]
@@ -505,7 +612,8 @@ class Snake():
 
             with ctx.Pool(n_workers, initializer=_init_worker,
                           initargs=(self.population, self.targets,
-                                    self.header, self.datatypes)) as pool:
+                                    self.header, self.datatypes,
+                                    self.oppose_profile, self._col_stats)) as pool:
                 for i, layer in enumerate(pool.imap_unordered(_build_layer_worker, jobs)):
                     self.layers.append(layer)
                     elapsed = time() - self._t0
@@ -734,6 +842,589 @@ class Snake():
     # Core SAT methods (unchanged)
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Oppose profiles
+    # ------------------------------------------------------------------
+
+    def _init_oppose_profile(self):
+        """Resolve oppose_profile and set self._active_oppose."""
+        if self.oppose_profile not in _VALID_PROFILES:
+            self.oppose_profile = "auto"
+        if self.oppose_profile == "auto":
+            self.oppose_profile = self._detect_profile()
+        self.qprint(f"# Oppose profile: {self.oppose_profile}")
+        self._active_oppose = getattr(self, f"_oppose_{self.oppose_profile}")
+        if self.oppose_profile == "scientific":
+            self._precompute_col_stats()
+
+    def _detect_profile(self):
+        """Scan population and datatypes to pick the best profile."""
+        text_cols = [i for i in range(1, len(self.datatypes)) if self.datatypes[i] == "T"]
+        num_cols = [i for i in range(1, len(self.datatypes)) if self.datatypes[i] == "N"]
+
+        if not text_cols:
+            return "scientific"
+
+        if not num_cols:
+            # Analyze text characteristics
+            sample_size = min(200, len(self.population))
+            rows = sample(self.population, sample_size) if len(self.population) > sample_size else self.population
+            total_len = 0
+            lengths = []
+            digit_count = 0
+            upper_count = 0
+            special_count = 0
+            total_chars = 0
+            split_count = 0
+            for row in rows:
+                for ci in text_cols:
+                    h = self.header[ci]
+                    v = str(row.get(h, ""))
+                    vlen = len(v)
+                    total_len += vlen
+                    lengths.append(vlen)
+                    total_chars += max(vlen, 1)
+                    digit_count += _count_digits(v)
+                    upper_count += _count_upper(v)
+                    special_count += _count_special(v)
+                    split_count += len(v.split(",")) + len(v.split(".")) - 2
+
+            n_vals = max(len(lengths), 1)
+            avg_len = total_len / n_vals
+            len_mean = avg_len
+            len_var = sum((l - len_mean) ** 2 for l in lengths) / n_vals if n_vals > 1 else 0
+            digit_ratio = digit_count / total_chars
+            upper_ratio = upper_count / total_chars
+            special_ratio = special_count / total_chars
+            avg_splits = split_count / n_vals
+
+            if avg_len > 30 and len_var > 100:
+                return "linguistic"
+            if avg_len < 15 and digit_ratio > 0.3:
+                return "industrial"
+            if special_ratio > 0.2 or upper_ratio > 0.6:
+                return "cryptographic"
+            if avg_splits > 2:
+                return "categorical"
+            return "balanced"
+
+        # Mixed text + numeric
+        return "balanced"
+
+    def _precompute_col_stats(self):
+        """Precompute per-column statistics for scientific profile."""
+        self._col_stats = {}
+        for i in range(1, len(self.datatypes)):
+            if self.datatypes[i] == "N":
+                h = self.header[i]
+                vals = [row[h] for row in self.population if isinstance(row.get(h), (int, float)) and row[h] == row[h]]
+                if vals:
+                    mu = sum(vals) / len(vals)
+                    std = (sum((v - mu) ** 2 for v in vals) / len(vals)) ** 0.5
+                    sorted_vals = sorted(vals)
+                    self._col_stats[i] = {"mean": mu, "std": max(std, 1e-10), "median": sorted_vals[len(sorted_vals) // 2]}
+
+    def _get_differing_candidates(self, T, F):
+        """Return list of feature indices where T and F differ (excluding NaN numerics)."""
+        candidates = [i for i in range(1, len(self.header)) if T[self.header[i]] != F[self.header[i]]
+                       and not (self.datatypes[i] == "N" and (T[self.header[i]] != T[self.header[i]] or F[self.header[i]] != F[self.header[i]]))]
+        return candidates
+
+    # --- Text literal generators (shared by profiles) ---
+
+    def _gen_text_substring(self, index, T, F):
+        """Generate a substring (T) literal. Includes FA/TA single-char matching."""
+        h = self.header[index]
+        tv, fv = str(T[h]), str(F[h])
+        possibilities = []
+        # FA/TA: single chars unique to one string (most discriminating)
+        chars_only_in_t = [c for c in set(tv) if c not in fv]
+        chars_only_in_f = [c for c in set(fv) if c not in tv]
+        possibilities += [[index, c, False, "T"] for c in chars_only_in_t]
+        possibilities += [[index, c, True, "T"] for c in chars_only_in_f]
+        # Separator-based tokens
+        pros = set()
+        cons = set()
+        for sep in [" ", "/", ":", "-"]:
+            for label in tv.split(sep):
+                pros.add(label.split("'")[0].split('"')[0])
+            for label in fv.split(sep):
+                cons.add(label.split("'")[0].split('"')[0])
+        clean_pros = [label for label in pros if len(label) > 1 and len(label) < max(2, len(tv)) and label not in fv]
+        clean_cons = [label for label in cons if len(label) > 1 and len(label) < max(2, len(fv)) and label not in tv]
+        possibilities += [[index, label, False, "T"] for label in clean_pros]
+        possibilities += [[index, label, True, "T"] for label in clean_cons]
+        if possibilities:
+            return choice(possibilities)
+        if tv != fv and tv not in fv:
+            return [index, tv, False, "T"]
+        if tv != fv and fv not in tv:
+            return [index, fv, True, "T"]
+        return None
+
+    def _gen_text_structural(self, index, T, F):
+        """Generate TN or TLN literal. Returns literal or None."""
+        h = self.header[index]
+        tv, fv = str(T[h]), str(F[h])
+        possible = []
+        if len(fv) != len(tv):
+            possible.append("TN")
+        if len(set(fv)) != len(set(tv)):
+            possible.append("TLN")
+        if not possible:
+            return None
+        todo = choice(possible)
+        if todo == "TN":
+            return [index, (len(fv) + len(tv)) / 2, len(tv) > len(fv), "TN"]
+        return [index, (len(set(fv)) + len(set(tv))) / 2, len(set(tv)) > len(set(fv)), "TLN"]
+
+    def _gen_text_splits(self, index, T, F):
+        """Generate TWS, TPS, or TSS literal. Returns literal or None."""
+        h = self.header[index]
+        tv, fv = str(T[h]), str(F[h])
+        possible = []
+        if len(fv.split(" ")) != len(tv.split(" ")):
+            possible.append("TWS")
+        if len(fv.split(",")) != len(tv.split(",")):
+            possible.append("TPS")
+        if len(fv.split(".")) != len(tv.split(".")):
+            possible.append("TSS")
+        if not possible:
+            return None
+        todo = choice(possible)
+        if todo == "TWS":
+            return [index, (len(fv.split(" ")) + len(tv.split(" "))) / 2, len(tv.split(" ")) > len(fv.split(" ")), "TWS"]
+        if todo == "TPS":
+            return [index, (len(fv.split(",")) + len(tv.split(","))) / 2, len(tv.split(",")) > len(fv.split(",")), "TPS"]
+        return [index, (len(fv.split(".")) + len(tv.split("."))) / 2, len(tv.split(".")) > len(fv.split(".")), "TSS"]
+
+    def _gen_text_distance(self, index, T, F):
+        """Generate LEV or JAC literal. Returns literal or None."""
+        h = self.header[index]
+        tv, fv = str(T[h]), str(F[h])
+        if tv == fv:
+            return None
+        tag = choice(["LEV", "JAC"])
+        if tag == "LEV":
+            d = _levenshtein(tv, fv)
+            if d == 0:
+                return None
+            threshold = d / 2
+            return [index, [tv, threshold], len(tv) < len(fv), "LEV"]
+        else:
+            j = _jaccard_bigrams(tv, fv)
+            threshold = (j + 1.0) / 2
+            return [index, [tv, threshold], True, "JAC"]
+
+    def _gen_text_positional(self, index, T, F):
+        """Generate PFX or SFX literal. Returns literal or None."""
+        h = self.header[index]
+        tv, fv = str(T[h]), str(F[h])
+        if tv == fv:
+            return None
+        tag = choice(["PFX", "SFX"])
+        if tag == "PFX":
+            pfx = _common_prefix_len(fv, tv)
+            threshold = (pfx + len(tv)) / 2
+            return [index, [tv, threshold], True, "PFX"]
+        else:
+            sfx = _common_suffix_len(fv, tv)
+            threshold = (sfx + len(tv)) / 2
+            return [index, [tv, threshold], True, "SFX"]
+
+    def _gen_text_charclass(self, index, T, F):
+        """Generate TUC, TDC, or TSC literal. Returns literal or None."""
+        h = self.header[index]
+        tv, fv = str(T[h]), str(F[h])
+        possible = []
+        if _count_upper(tv) != _count_upper(fv):
+            possible.append("TUC")
+        if _count_digits(tv) != _count_digits(fv):
+            possible.append("TDC")
+        if _count_special(tv) != _count_special(fv):
+            possible.append("TSC")
+        if not possible:
+            return None
+        tag = choice(possible)
+        if tag == "TUC":
+            return [index, (_count_upper(fv) + _count_upper(tv)) / 2, _count_upper(tv) > _count_upper(fv), "TUC"]
+        if tag == "TDC":
+            return [index, (_count_digits(fv) + _count_digits(tv)) / 2, _count_digits(tv) > _count_digits(fv), "TDC"]
+        return [index, (_count_special(fv) + _count_special(tv)) / 2, _count_special(tv) > _count_special(fv), "TSC"]
+
+    # --- Numeric literal generators ---
+
+    def _gen_numeric_midpoint(self, index, T, F):
+        """Generate N literal (midpoint split)."""
+        h = self.header[index]
+        return [index, (F[h] + T[h]) / 2, T[h] > F[h], "N"]
+
+    def _gen_numeric_digit_count(self, index, T, F):
+        """Generate ND literal (digit count). Returns literal or None."""
+        h = self.header[index]
+        tv, fv = str(T[h]), str(F[h])
+        dt = _count_digits(tv)
+        df = _count_digits(fv)
+        if dt == df:
+            return None
+        return [index, (dt + df) / 2, dt > df, "ND"]
+
+    def _gen_numeric_zscore(self, index, T, F):
+        """Generate NZ literal (z-score threshold). Returns literal or None."""
+        h = self.header[index]
+        stats = self._col_stats.get(index)
+        if not stats:
+            return self._gen_numeric_midpoint(index, T, F)
+        mu, std = stats["mean"], stats["std"]
+        zt = (T[h] - mu) / std
+        zf = (F[h] - mu) / std
+        if zt == zf:
+            return None
+        threshold = (zt + zf) / 2
+        return [index, [mu, std, threshold], zt > zf, "NZ"]
+
+    def _gen_numeric_logscale(self, index, T, F):
+        """Generate NL literal (log-scale midpoint). Returns literal or None."""
+        h = self.header[index]
+        tv, fv = T[h], F[h]
+
+        def _signed_log(x):
+            if x == 0:
+                return 0.0
+            return math.copysign(math.log(abs(x) + 1), x)
+
+        lt = _signed_log(tv)
+        lf = _signed_log(fv)
+        if lt == lf:
+            return None
+        return [index, (lt + lf) / 2, lt > lf, "NL"]
+
+    def _gen_numeric_magnitude(self, index, T, F):
+        """Generate NMG literal (order of magnitude). Returns literal or None."""
+        h = self.header[index]
+        tv, fv = T[h], F[h]
+
+        def _mag(x):
+            if x == 0:
+                return 0.0
+            return math.floor(math.log10(abs(x) + 1e-300))
+
+        mt = _mag(tv)
+        mf = _mag(fv)
+        if mt == mf:
+            return None
+        return [index, (mt + mf) / 2, mt > mf, "NMG"]
+
+    def _gen_numeric_zero(self, index, T, F):
+        """Generate NZR literal (zero test). Returns literal or None."""
+        h = self.header[index]
+        tv, fv = T[h], F[h]
+        if (tv == 0) == (fv == 0):
+            return None  # both zero or both nonzero — test won't discriminate
+        return [index, 0, tv == 0, "NZR"]
+
+    def _gen_numeric_range(self, index, T, F):
+        """Generate NRG literal (range). Returns literal or None."""
+        h = self.header[index]
+        tv, fv = T[h], F[h]
+        if tv == fv:
+            return None
+        lo, hi = min(tv, fv), max(tv, fv)
+        return [index, [lo, hi], tv < fv, "NRG"]
+
+    def _gen_text_exact(self, index, T, F):
+        """Generate TEQ literal (exact match). Returns literal or None."""
+        h = self.header[index]
+        tv, fv = str(T[h]), str(F[h])
+        if tv == fv:
+            return None
+        if random() < 0.5:
+            return [index, tv, False, "TEQ"]
+        return [index, fv, True, "TEQ"]
+
+    def _gen_text_startswith(self, index, T, F):
+        """Generate TSW literal (starts with). Returns literal or None."""
+        h = self.header[index]
+        tv, fv = str(T[h]), str(F[h])
+        # Find a prefix of tv that fv doesn't start with (or vice versa)
+        for length in range(1, min(len(tv), 8) + 1):
+            prefix = tv[:length]
+            if not fv.startswith(prefix):
+                return [index, prefix, False, "TSW"]
+        for length in range(1, min(len(fv), 8) + 1):
+            prefix = fv[:length]
+            if not tv.startswith(prefix):
+                return [index, prefix, True, "TSW"]
+        return None
+
+    def _gen_text_endswith(self, index, T, F):
+        """Generate TEW literal (ends with). Returns literal or None."""
+        h = self.header[index]
+        tv, fv = str(T[h]), str(F[h])
+        for length in range(1, min(len(tv), 8) + 1):
+            suffix = tv[-length:]
+            if not fv.endswith(suffix):
+                return [index, suffix, False, "TEW"]
+        for length in range(1, min(len(fv), 8) + 1):
+            suffix = fv[-length:]
+            if not tv.endswith(suffix):
+                return [index, suffix, True, "TEW"]
+        return None
+
+    def _gen_text_vowel_ratio(self, index, T, F):
+        """Generate TVR literal (vowel ratio). Returns literal or None."""
+        h = self.header[index]
+        tv, fv = str(T[h]), str(F[h])
+        vowels = set("aeiouAEIOU")
+        vt = sum(1 for c in tv if c in vowels) / max(len(tv), 1)
+        vf = sum(1 for c in fv if c in vowels) / max(len(fv), 1)
+        if vt == vf:
+            return None
+        return [index, (vt + vf) / 2, vt > vf, "TVR"]
+
+    # --- Crypto-specific generators ---
+
+    def _gen_crypto_entropy(self, index, T, F):
+        """Generate ENT literal (Shannon entropy). Returns literal or None."""
+        h = self.header[index]
+        tv, fv = str(T[h]), str(F[h])
+        et = _entropy(tv)
+        ef = _entropy(fv)
+        if et == ef:
+            return None
+        return [index, (et + ef) / 2, et > ef, "ENT"]
+
+    def _gen_crypto_hex(self, index, T, F):
+        """Generate HEX literal (hex char ratio). Returns literal or None."""
+        h = self.header[index]
+        tv, fv = str(T[h]), str(F[h])
+        ht = _hex_ratio(tv)
+        hf = _hex_ratio(fv)
+        if ht == hf:
+            return None
+        return [index, (ht + hf) / 2, ht > hf, "HEX"]
+
+    def _gen_crypto_repeat(self, index, T, F):
+        """Generate REP literal (repeat period score). Returns literal or None."""
+        h = self.header[index]
+        tv, fv = str(T[h]), str(F[h])
+        rt = _repeat_period_score(tv)
+        rf = _repeat_period_score(fv)
+        if rt == rf:
+            return None
+        return [index, (rt + rf) / 2, rt > rf, "REP"]
+
+    def _gen_crypto_charfreq(self, index, T, F):
+        """Generate CFC literal (char freq chi-squared). Returns literal or None."""
+        h = self.header[index]
+        tv, fv = str(T[h]), str(F[h])
+        if not tv:
+            return None
+        # Build reference freq from T
+        ref_freq = {}
+        for c in tv:
+            ref_freq[c] = ref_freq.get(c, 0) + 1
+        nt = len(tv)
+        ref_freq = {c: cnt / nt for c, cnt in ref_freq.items()}
+        # Compute chi-sq of F against T's frequency
+        nf = max(len(fv), 1)
+        f_freq = {}
+        for c in fv:
+            f_freq[c] = f_freq.get(c, 0) + 1
+        chi_sq = 0.0
+        all_chars = set(ref_freq) | set(f_freq)
+        for c in all_chars:
+            observed = f_freq.get(c, 0) / nf
+            expected = ref_freq.get(c, 0.001)
+            chi_sq += (observed - expected) ** 2 / max(expected, 0.001)
+        if chi_sq == 0:
+            return None
+        threshold = chi_sq / 2
+        return [index, [ref_freq, threshold], False, "CFC"]
+
+    # --- Profile oppose methods (flat inline, no dispatch overhead) ---
+
+    def _oppose_balanced(self, T, F):
+        """Equal probability across all families. No assumptions."""
+        candidates = self._get_differing_candidates(T, F)
+        if not candidates:
+            return None
+        index = choice(candidates)
+        h = self.header[index]
+        if self.datatypes[index] == "T":
+            r = random()
+            if r < 0.167:
+                lit = self._gen_text_substring(index, T, F)
+            elif r < 0.333:
+                lit = self._gen_text_structural(index, T, F)
+            elif r < 0.500:
+                lit = self._gen_text_splits(index, T, F)
+            elif r < 0.667:
+                lit = self._gen_text_distance(index, T, F)
+            elif r < 0.833:
+                lit = self._gen_text_positional(index, T, F)
+            else:
+                lit = self._gen_text_charclass(index, T, F)
+            return lit if lit is not None else self._gen_text_substring(index, T, F)
+        if self.datatypes[index] == "N":
+            r = random()
+            if r < 0.5:
+                return self._gen_numeric_midpoint(index, T, F)
+            lit = self._gen_numeric_digit_count(index, T, F)
+            return lit if lit is not None else self._gen_numeric_midpoint(index, T, F)
+        return None
+
+    def _oppose_linguistic(self, T, F):
+        """Heavy on edit distance + positional. For NLP / free text."""
+        candidates = self._get_differing_candidates(T, F)
+        if not candidates:
+            return None
+        index = choice(candidates)
+        if self.datatypes[index] == "T":
+            r = random()
+            if r < 0.35:
+                lit = self._gen_text_distance(index, T, F)
+            elif r < 0.55:
+                lit = self._gen_text_positional(index, T, F)
+            elif r < 0.70:
+                lit = self._gen_text_charclass(index, T, F)
+            elif r < 0.85:
+                lit = self._gen_text_structural(index, T, F)
+            elif r < 0.95:
+                lit = self._gen_text_splits(index, T, F)
+            else:
+                lit = self._gen_text_substring(index, T, F)
+            return lit if lit is not None else self._gen_text_substring(index, T, F)
+        if self.datatypes[index] == "N":
+            return self._gen_numeric_midpoint(index, T, F)
+        return None
+
+    def _oppose_industrial(self, T, F):
+        """Heavy on substring. For product codes, SKUs, short labels."""
+        candidates = self._get_differing_candidates(T, F)
+        if not candidates:
+            return None
+        index = choice(candidates)
+        if self.datatypes[index] == "T":
+            r = random()
+            if r < 0.40:
+                lit = self._gen_text_substring(index, T, F)
+                if lit is not None:
+                    return lit
+            if r < 0.60:
+                lit = self._gen_text_structural(index, T, F)
+                if lit is not None:
+                    return lit
+            if r < 0.75:
+                lit = self._gen_text_splits(index, T, F)
+                if lit is not None:
+                    return lit
+            if r < 0.85:
+                lit = self._gen_text_positional(index, T, F)
+                if lit is not None:
+                    return lit
+            if r < 0.95:
+                lit = self._gen_text_charclass(index, T, F)
+                if lit is not None:
+                    return lit
+            return self._gen_text_substring(index, T, F)
+        if self.datatypes[index] == "N":
+            return self._gen_numeric_midpoint(index, T, F)
+        return None
+
+    def _oppose_cryptographic(self, T, F):
+        """Entropy, hex ratio, char frequency, repeat patterns. For hashes/IDs."""
+        candidates = self._get_differing_candidates(T, F)
+        if not candidates:
+            return None
+        index = choice(candidates)
+        if self.datatypes[index] == "T":
+            r = random()
+            if r < 0.15:
+                lit = self._gen_text_charclass(index, T, F)
+            elif r < 0.25:
+                lit = self._gen_crypto_entropy(index, T, F)
+            elif r < 0.30:
+                lit = self._gen_crypto_hex(index, T, F)
+            elif r < 0.35:
+                lit = self._gen_crypto_repeat(index, T, F)
+            elif r < 0.60:
+                lit = self._gen_text_structural(index, T, F)
+            elif r < 0.75:
+                lit = self._gen_text_distance(index, T, F)
+            elif r < 0.85:
+                lit = self._gen_text_splits(index, T, F)
+            elif r < 0.95:
+                lit = self._gen_text_positional(index, T, F)
+            else:
+                lit = self._gen_text_substring(index, T, F)
+            return lit if lit is not None else self._gen_text_substring(index, T, F)
+        if self.datatypes[index] == "N":
+            return self._gen_numeric_midpoint(index, T, F)
+        return None
+
+    def _oppose_scientific(self, T, F):
+        """Z-score, log-scale, magnitude. For numeric-heavy data."""
+        candidates = self._get_differing_candidates(T, F)
+        if not candidates:
+            return None
+        index = choice(candidates)
+        if self.datatypes[index] == "N":
+            r = random()
+            if r < 0.40:
+                return self._gen_numeric_midpoint(index, T, F)
+            if r < 0.60:
+                lit = self._gen_numeric_zscore(index, T, F)
+                if lit is not None:
+                    return lit
+            if r < 0.75:
+                lit = self._gen_numeric_logscale(index, T, F)
+                if lit is not None:
+                    return lit
+            if r < 0.90:
+                lit = self._gen_numeric_magnitude(index, T, F)
+                if lit is not None:
+                    return lit
+            lit = self._gen_numeric_digit_count(index, T, F)
+            return lit if lit is not None else self._gen_numeric_midpoint(index, T, F)
+        if self.datatypes[index] == "T":
+            lit = self._gen_text_substring(index, T, F)
+            return lit if lit is not None else self._gen_text_structural(index, T, F)
+        return None
+
+    def _oppose_categorical(self, T, F):
+        """Heavy on splits + substring. For surveys, tags, enums."""
+        candidates = self._get_differing_candidates(T, F)
+        if not candidates:
+            return None
+        index = choice(candidates)
+        if self.datatypes[index] == "T":
+            r = random()
+            if r < 0.30:
+                lit = self._gen_text_splits(index, T, F)
+                if lit is not None:
+                    return lit
+            if r < 0.60:
+                lit = self._gen_text_substring(index, T, F)
+                if lit is not None:
+                    return lit
+            if r < 0.75:
+                lit = self._gen_text_structural(index, T, F)
+                if lit is not None:
+                    return lit
+            if r < 0.85:
+                lit = self._gen_text_distance(index, T, F)
+                if lit is not None:
+                    return lit
+            if r < 0.95:
+                lit = self._gen_text_positional(index, T, F)
+                if lit is not None:
+                    return lit
+            return self._gen_text_substring(index, T, F)
+        if self.datatypes[index] == "N":
+            return self._gen_numeric_midpoint(index, T, F)
+        return None
+
     """
     Will return
     - For text fields: words to be or not to be included
@@ -853,6 +1544,96 @@ class Snake():
             if negat:
                 return value <= field
             return value > field
+        # --- New literal types (v5.2.0) ---
+        elif datat == "ND":
+            dc = _count_digits(str(field))
+            return value <= dc if negat else value > dc
+        elif datat == "TUC":
+            uc = _count_upper(str(field))
+            return value <= uc if negat else value > uc
+        elif datat == "TDC":
+            dc = _count_digits(str(field))
+            return value <= dc if negat else value > dc
+        elif datat == "TSC":
+            sc = _count_special(str(field))
+            return value <= sc if negat else value > sc
+        elif datat == "LEV":
+            ref, threshold = value[0], value[1]
+            d = _levenshtein(str(field), ref)
+            return d <= threshold if negat else d > threshold
+        elif datat == "JAC":
+            ref, threshold = value[0], value[1]
+            j = _jaccard_bigrams(str(field), ref)
+            return j >= threshold if negat else j < threshold
+        elif datat == "PFX":
+            ref, threshold = value[0], value[1]
+            p = _common_prefix_len(str(field), ref)
+            return p >= threshold if negat else p < threshold
+        elif datat == "SFX":
+            ref, threshold = value[0], value[1]
+            s = _common_suffix_len(str(field), ref)
+            return s >= threshold if negat else s < threshold
+        elif datat == "ENT":
+            e = _entropy(str(field))
+            return value <= e if negat else value > e
+        elif datat == "HEX":
+            h = _hex_ratio(str(field))
+            return value <= h if negat else value > h
+        elif datat == "REP":
+            r = _repeat_period_score(str(field))
+            return value <= r if negat else value > r
+        elif datat == "CFC":
+            ref_freq, threshold = value[0], value[1]
+            sf = str(field)
+            nf = max(len(sf), 1)
+            f_freq = {}
+            for c in sf:
+                f_freq[c] = f_freq.get(c, 0) + 1
+            chi_sq = 0.0
+            all_chars = set(ref_freq) | set(f_freq)
+            for c in all_chars:
+                observed = f_freq.get(c, 0) / nf
+                expected = ref_freq.get(c, 0.001)
+                chi_sq += (observed - expected) ** 2 / max(expected, 0.001)
+            return chi_sq < threshold if negat else chi_sq >= threshold
+        elif datat == "NZ":
+            mu, std, threshold = value[0], value[1], value[2]
+            z = (field - mu) / std
+            return z >= threshold if negat else z < threshold
+        elif datat == "NL":
+            def _signed_log(x):
+                if x == 0:
+                    return 0.0
+                return math.copysign(math.log(abs(x) + 1), x)
+            lv = _signed_log(field)
+            return value <= lv if negat else value > lv
+        elif datat == "NMG":
+            def _mag(x):
+                if x == 0:
+                    return 0.0
+                return math.floor(math.log10(abs(x) + 1e-300))
+            m = _mag(field)
+            return value <= m if negat else value > m
+        elif datat == "NZR":
+            return (field != 0) if negat else (field == 0)
+        elif datat == "NRG":
+            lo, hi = value[0], value[1]
+            inside = lo < field <= hi
+            return inside if negat else not inside
+        elif datat == "TEQ":
+            sfield = str(field)
+            return (sfield != value) if negat else (sfield == value)
+        elif datat == "TSW":
+            sfield = str(field)
+            return (not sfield.startswith(value)) if negat else sfield.startswith(value)
+        elif datat == "TEW":
+            sfield = str(field)
+            return (not sfield.endswith(value)) if negat else sfield.endswith(value)
+        elif datat == "TVR":
+            sfield = str(field)
+            vowels = set("aeiouAEIOU")
+            vr = sum(1 for c in sfield if c in vowels) / max(len(sfield), 1)
+            return value <= vr if negat else value > vr
         return False
 
     """
@@ -873,7 +1654,8 @@ class Snake():
     - Minimal
     """
     def construct_clause(self, F, Ts):
-        lit = self.oppose(choice(Ts), F)
+        _oppose = self._active_oppose if hasattr(self, '_active_oppose') else self.oppose
+        lit = _oppose(choice(Ts), F)
         if lit is None:
             return []
         clause = [lit]
@@ -882,7 +1664,7 @@ class Snake():
             Ts_remainder = filter_ts_remainder_fast(Ts, clause[-1], self.header)
             iters = 0
             while len(Ts_remainder):
-                lit = self.oppose(choice(Ts_remainder), F)
+                lit = _oppose(choice(Ts_remainder), F)
                 if lit is None:
                     break
                 clause.append(lit)
@@ -897,7 +1679,7 @@ class Snake():
             Ts_remainder = [T for T in Ts if not self.apply_literal(T, clause[-1])]
             iters = 0
             while len(Ts_remainder):
-                lit = self.oppose(choice(Ts_remainder), F)
+                lit = _oppose(choice(Ts_remainder), F)
                 if lit is None:
                     break
                 clause.append(lit)
@@ -1026,9 +1808,10 @@ class Snake():
         k = len(self._unique_targets())
         self.qprint(f"#   [layer] Building bucket chain... O(n={n}, m={m}, k={k})")
 
+        _oppose = self._active_oppose if hasattr(self, '_active_oppose') else self.oppose
         chain = build_bucket_chain(
             self.population, self.targets, self.bucket,
-            self.oppose, self.apply_literal, self.noise,
+            _oppose, self.apply_literal, self.noise,
             log_fn=self.qprint, header=self.header
         )
 
@@ -1255,6 +2038,56 @@ class Snake():
             if negat:
                 return f'"{h}" <= {value}'
             return f'"{h}" > {value}'
+        # --- New literal types (v5.2.0) ---
+        if datat == "ND":
+            return f'digits("{h}") >= {value}' if negat else f'digits("{h}") < {value}'
+        if datat == "TUC":
+            return f'uppercase("{h}") >= {value}' if negat else f'uppercase("{h}") < {value}'
+        if datat == "TDC":
+            return f'digit_chars("{h}") >= {value}' if negat else f'digit_chars("{h}") < {value}'
+        if datat == "TSC":
+            return f'special_chars("{h}") >= {value}' if negat else f'special_chars("{h}") < {value}'
+        if datat == "LEV":
+            ref, threshold = value[0], value[1]
+            return f'levenshtein("{h}", "{ref}") <= {threshold:.1f}' if negat else f'levenshtein("{h}", "{ref}") > {threshold:.1f}'
+        if datat == "JAC":
+            ref, threshold = value[0], value[1]
+            return f'jaccard("{h}", "{ref}") >= {threshold:.2f}' if negat else f'jaccard("{h}", "{ref}") < {threshold:.2f}'
+        if datat == "PFX":
+            ref, threshold = value[0], value[1]
+            return f'prefix("{h}", "{ref}") >= {threshold:.1f}' if negat else f'prefix("{h}", "{ref}") < {threshold:.1f}'
+        if datat == "SFX":
+            ref, threshold = value[0], value[1]
+            return f'suffix("{h}", "{ref}") >= {threshold:.1f}' if negat else f'suffix("{h}", "{ref}") < {threshold:.1f}'
+        if datat == "ENT":
+            return f'entropy("{h}") >= {value:.2f}' if negat else f'entropy("{h}") < {value:.2f}'
+        if datat == "HEX":
+            return f'hex_ratio("{h}") >= {value:.2f}' if negat else f'hex_ratio("{h}") < {value:.2f}'
+        if datat == "REP":
+            return f'repeat_score("{h}") >= {value:.2f}' if negat else f'repeat_score("{h}") < {value:.2f}'
+        if datat == "CFC":
+            _, threshold = value[0], value[1]
+            return f'charfreq_chi("{h}") < {threshold:.2f}' if negat else f'charfreq_chi("{h}") >= {threshold:.2f}'
+        if datat == "NZ":
+            mu, std, threshold = value[0], value[1], value[2]
+            return f'zscore("{h}") >= {threshold:.2f}' if negat else f'zscore("{h}") < {threshold:.2f}'
+        if datat == "NL":
+            return f'log("{h}") >= {value:.2f}' if negat else f'log("{h}") < {value:.2f}'
+        if datat == "NMG":
+            return f'magnitude("{h}") >= {value}' if negat else f'magnitude("{h}") < {value}'
+        if datat == "NZR":
+            return f'"{h}" != 0' if negat else f'"{h}" == 0'
+        if datat == "NRG":
+            lo, hi = value[0], value[1]
+            return f'{lo} < "{h}" <= {hi}' if negat else f'NOT ({lo} < "{h}" <= {hi})'
+        if datat == "TEQ":
+            return f'"{h}" != "{value}"' if negat else f'"{h}" == "{value}"'
+        if datat == "TSW":
+            return f'"{h}" NOT starts with "{value}"' if negat else f'"{h}" starts with "{value}"'
+        if datat == "TEW":
+            return f'"{h}" NOT ends with "{value}"' if negat else f'"{h}" ends with "{value}"'
+        if datat == "TVR":
+            return f'vowel_ratio("{h}") >= {value:.2f}' if negat else f'vowel_ratio("{h}") < {value:.2f}'
         return str(literal)
 
     def _format_bar(self, pct, width=20):
@@ -1452,7 +2285,7 @@ class Snake():
 
     def to_json(self, fout="snakeclassifier.json"):
         snake_classifier = {
-            "version": "5.0.0",
+            "version": "5.2.0",
             "population": self.population,
             "header": self.header,
             "target": self.target,
@@ -1464,6 +2297,7 @@ class Snake():
                 "noise": self.noise,
                 "vocal": self.vocal,
                 "workers": self.workers,
+                "oppose_profile": getattr(self, 'oppose_profile', 'auto'),
             },
             "layers": self.layers,
             "log": self.log
@@ -1494,9 +2328,19 @@ class Snake():
             self.noise = cfg.get("noise", self.noise)
             self.vocal = cfg.get("vocal", self.vocal)
             self.workers = cfg.get("workers", 1)
+            self.oppose_profile = cfg.get("oppose_profile", "auto")
         elif "n_layers" in loaded_module:
             self.n_layers = loaded_module["n_layers"]
             self.vocal = loaded_module.get("vocal", self.vocal)
+
+        # Initialize oppose profile for loaded models
+        if hasattr(self, 'oppose_profile') and self.oppose_profile in _VALID_PROFILES and self.oppose_profile != "auto":
+            self._active_oppose = getattr(self, f"_oppose_{self.oppose_profile}")
+            if self.oppose_profile == "scientific":
+                self._precompute_col_stats()
+        else:
+            # Old models or auto: default to original oppose
+            self._active_oppose = self.oppose
 
         self.log = loaded_module.get("log", self.log)
         self.qprint(f"# Algorithme.ai : Successful load from {filepath}")
@@ -1612,7 +2456,7 @@ class Snake():
 _worker_data = {}
 
 
-def _init_worker(population, targets, header, datatypes):
+def _init_worker(population, targets, header, datatypes, oppose_profile=None, col_stats=None):
     """Pool initializer — sends large data once per worker process."""
     global _worker_data
     _worker_data = {
@@ -1620,6 +2464,8 @@ def _init_worker(population, targets, header, datatypes):
         "targets": targets,
         "header": header,
         "datatypes": datatypes,
+        "oppose_profile": oppose_profile,
+        "col_stats": col_stats or {},
     }
 
 
@@ -1658,11 +2504,19 @@ def _build_layer_worker(args):
     s.vocal = False
     s.progress_file = None
     s.workers = 1
+    s.oppose_profile = _worker_data.get("oppose_profile", "auto")
+    s._col_stats = _worker_data.get("col_stats", {})
     s._t0 = time()
     s._avg_per_layer = 0
     s._current_layer = layer_idx
 
     _setup_worker_logger(s, seed)
+
+    # Initialize _active_oppose for the worker
+    if s.oppose_profile in _VALID_PROFILES and s.oppose_profile != "auto":
+        s._active_oppose = getattr(s, f"_oppose_{s.oppose_profile}")
+    else:
+        s._active_oppose = s.oppose
 
     s.construct_layer()
     return s.layers[0]
