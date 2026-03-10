@@ -184,7 +184,7 @@ class TestUltimateTraining:
     def test_500_samples_10_classes_5_layers(self):
         """Max scale: 500 samples, 10 classes, 5 layers, bucket=100."""
         data = _gen_mixed_heavy(500, 10, 3, 2)
-        with _Timeout(10):
+        with _Timeout(15):
             s = Snake(data, n_layers=5, bucket=100, vocal=True)
         assert len(s.layers) == 5
         prob = s.get_probability({"txt0": "glass lowe 0", "txt1": "bronze clair 0",

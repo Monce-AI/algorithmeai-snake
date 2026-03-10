@@ -2,7 +2,7 @@ import json
 import logging
 import math
 import sys
-from random import choice, sample, random
+from random import choice, choices, sample, random
 from time import time
 
 try:
@@ -20,7 +20,7 @@ except ImportError:
 #                                                              #
 #    Algorithme.ai : Snake         Author : Charles Dana       #
 #                                                              #
-#    v5.2.1 — SAT-ensembled bucketed multiclass classifier     #
+#    v5.3.0 — SAT-ensembled bucketed multiclass classifier     #
 #                                                              #
 ################################################################
 
@@ -28,7 +28,7 @@ _BANNER = """################################################################
 #                                                              #
 #    Algorithme.ai : Snake         Author : Charles Dana       #
 #                                                              #
-#    v5.2.1 — SAT-ensembled bucketed multiclass classifier     #
+#    v5.3.0 — SAT-ensembled bucketed multiclass classifier     #
 #                                                              #
 ################################################################
 """
@@ -293,7 +293,7 @@ Snake() of data will provide insights
 class Snake():
     def __init__(self, Knowledge, target_index=0, excluded_features_index=(),
                  n_layers=5, bucket=250, noise=0.25, vocal=False, saved=False,
-                 progress_file=None, workers=1, oppose_profile="auto"):
+                 progress_file=None, workers=1, oppose_profile="auto", lookahead=5):
         # --- logging setup ---
         global _snake_instance_counter
         _snake_instance_counter += 1
@@ -344,6 +344,8 @@ class Snake():
         self.workers = workers
         self.oppose_profile = oppose_profile
         self._col_stats = {}
+        self._feature_mi = {}
+        self.lookahead = lookahead
         self._t0 = 0
         self._avg_per_layer = 0
         self._current_layer = 0
@@ -592,6 +594,7 @@ class Snake():
         self.qprint(f"#   Bucket size:   {self.bucket}")
         self.qprint(f"#   Noise:         {self.noise}")
         self.qprint(f"#   Profile:       {self.oppose_profile}")
+        self.qprint(f"#   Lookahead:     {self.lookahead}")
         self.qprint(f"#   Vocal:         {self.vocal}")
         self.qprint(f"#")
         top_5 = sorted(target_counts, key=lambda x: -x[1])[:5]
@@ -621,7 +624,8 @@ class Snake():
             with ctx.Pool(n_workers, initializer=_init_worker,
                           initargs=(self.population, self.targets,
                                     self.header, self.datatypes,
-                                    self.oppose_profile, self._col_stats)) as pool:
+                                    self.oppose_profile, self._col_stats,
+                                    self._feature_mi, self.lookahead)) as pool:
                 for i, layer in enumerate(pool.imap_unordered(_build_layer_worker, jobs)):
                     self.layers.append(layer)
                     elapsed = time() - self._t0
@@ -864,6 +868,7 @@ class Snake():
         self._active_oppose = getattr(self, f"_oppose_{self.oppose_profile}")
         if self.oppose_profile == "scientific":
             self._precompute_col_stats()
+        self._precompute_feature_mi()
 
     def _detect_profile(self):
         """Scan population and datatypes to pick the best profile."""
@@ -931,6 +936,84 @@ class Snake():
                     std = (sum((v - mu) ** 2 for v in vals) / len(vals)) ** 0.5
                     sorted_vals = sorted(vals)
                     self._col_stats[i] = {"mean": mu, "std": max(std, 1e-10), "median": sorted_vals[len(sorted_vals) // 2]}
+
+    def _precompute_feature_mi(self):
+        """Compute mutual information MI(feature; target) for each feature. O(n*m)."""
+        self._feature_mi = {}
+        n = len(self.population)
+        if n < 2:
+            return
+        # Target distribution
+        target_counts = {}
+        for t in self.targets:
+            k = self._target_key(t)
+            target_counts[k] = target_counts.get(k, 0) + 1
+        for col in range(1, len(self.header)):
+            h = self.header[col]
+            if self.datatypes[col] == "N":
+                vals = []
+                for row in self.population:
+                    v = row.get(h)
+                    if isinstance(v, (int, float)) and v == v:
+                        vals.append(v)
+                    else:
+                        vals.append(0.0)
+                sorted_unique = sorted(set(vals))
+                n_bins = min(20, len(sorted_unique))
+                if n_bins < 2:
+                    self._feature_mi[col] = 0.0
+                    continue
+                boundaries = []
+                for b in range(1, n_bins):
+                    idx = min(int(b * len(sorted_unique) / n_bins), len(sorted_unique) - 1)
+                    boundaries.append(sorted_unique[idx])
+                bins = []
+                for v in vals:
+                    assigned = len(boundaries)
+                    for bi, bnd in enumerate(boundaries):
+                        if v <= bnd:
+                            assigned = bi
+                            break
+                    bins.append(assigned)
+            else:
+                raw_vals = [str(row.get(h, "")) for row in self.population]
+                val_counts = {}
+                for v in raw_vals:
+                    val_counts[v] = val_counts.get(v, 0) + 1
+                if len(val_counts) > 200:
+                    top = sorted(val_counts, key=lambda x: -val_counts[x])[:199]
+                    keep = set(top)
+                    bins = [v if v in keep else "__other__" for v in raw_vals]
+                else:
+                    bins = raw_vals
+            # Joint histogram → MI
+            joint = {}
+            feat_counts = {}
+            for i_row in range(n):
+                b = bins[i_row]
+                tk = self._target_key(self.targets[i_row])
+                key = (b, tk)
+                joint[key] = joint.get(key, 0) + 1
+                feat_counts[b] = feat_counts.get(b, 0) + 1
+            mi = 0.0
+            for (b, tk), count in joint.items():
+                p_joint = count / n
+                p_feat = feat_counts[b] / n
+                p_target = target_counts[tk] / n
+                if p_joint > 0 and p_feat > 0 and p_target > 0:
+                    mi += p_joint * math.log2(p_joint / (p_feat * p_target))
+            self._feature_mi[col] = max(mi, 0.0)
+        if self._feature_mi:
+            sorted_mi = sorted(self._feature_mi.items(), key=lambda x: -x[1])
+            top5 = [(self.header[col], f"{mi:.4f}") for col, mi in sorted_mi[:5]]
+            self.qprint(f"# Feature MI (top 5): {top5}")
+
+    def _weighted_feature_choice(self, candidates):
+        """Pick a feature index from candidates, weighted by MI. Falls back to uniform."""
+        if not self._feature_mi or len(candidates) <= 1:
+            return choice(candidates)
+        weights = [self._feature_mi.get(i, 0.0) + 1e-4 for i in candidates]
+        return choices(candidates, weights=weights, k=1)[0]
 
     def _get_differing_candidates(self, T, F):
         """Return list of feature indices where T and F differ (excluding NaN numerics)."""
@@ -1258,7 +1341,7 @@ class Snake():
         candidates = self._get_differing_candidates(T, F)
         if not candidates:
             return None
-        index = choice(candidates)
+        index = self._weighted_feature_choice(candidates)
         h = self.header[index]
         if self.datatypes[index] == "T":
             r = random()
@@ -1288,7 +1371,7 @@ class Snake():
         candidates = self._get_differing_candidates(T, F)
         if not candidates:
             return None
-        index = choice(candidates)
+        index = self._weighted_feature_choice(candidates)
         if self.datatypes[index] == "T":
             r = random()
             if r < 0.35:
@@ -1313,7 +1396,7 @@ class Snake():
         candidates = self._get_differing_candidates(T, F)
         if not candidates:
             return None
-        index = choice(candidates)
+        index = self._weighted_feature_choice(candidates)
         if self.datatypes[index] == "T":
             r = random()
             if r < 0.40:
@@ -1346,7 +1429,7 @@ class Snake():
         candidates = self._get_differing_candidates(T, F)
         if not candidates:
             return None
-        index = choice(candidates)
+        index = self._weighted_feature_choice(candidates)
         if self.datatypes[index] == "T":
             r = random()
             if r < 0.15:
@@ -1377,7 +1460,7 @@ class Snake():
         candidates = self._get_differing_candidates(T, F)
         if not candidates:
             return None
-        index = choice(candidates)
+        index = self._weighted_feature_choice(candidates)
         if self.datatypes[index] == "N":
             r = random()
             if r < 0.40:
@@ -1406,7 +1489,7 @@ class Snake():
         candidates = self._get_differing_candidates(T, F)
         if not candidates:
             return None
-        index = choice(candidates)
+        index = self._weighted_feature_choice(candidates)
         if self.datatypes[index] == "T":
             r = random()
             if r < 0.30:
@@ -1444,7 +1527,7 @@ class Snake():
                        and not (self.datatypes[i] == "N" and (T[self.header[i]] != T[self.header[i]] or F[self.header[i]] != F[self.header[i]]))]
         if not candidates:
             exit("Snake.oppose() — T and F are identical on all features. Dedup failed somewhere upstream. You should never see this. I'm out.")
-        index = choice(candidates)
+        index = self._weighted_feature_choice(candidates)
         h = self.header[index]
         if self.datatypes[index] == "T":
             if choice(["Do it", "Don't"]) == "Do it":
@@ -1656,6 +1739,23 @@ class Snake():
                 return True
         return False
 
+    def _oppose_lookahead(self, Ts, F):
+        """Generate K oppose literals, return the one covering the most Ts."""
+        k = getattr(self, 'lookahead', 5)
+        _oppose = self._active_oppose if hasattr(self, '_active_oppose') else self.oppose
+        if k <= 1:
+            return _oppose(choice(Ts), F)
+        best_lit, best_cov = None, -1
+        for _ in range(k):
+            lit = _oppose(choice(Ts), F)
+            if lit is None:
+                continue
+            cov = sum(1 for t in Ts if self.apply_literal(t, lit))
+            if cov > best_cov:
+                best_cov = cov
+                best_lit = lit
+        return best_lit
+
     """
     Constructs a minimal clause to discriminate F relative to Ts
     - True on all Ts
@@ -1663,8 +1763,7 @@ class Snake():
     - Minimal
     """
     def construct_clause(self, F, Ts):
-        _oppose = self._active_oppose if hasattr(self, '_active_oppose') else self.oppose
-        lit = _oppose(choice(Ts), F)
+        lit = self._oppose_lookahead(Ts, F)
         if lit is None:
             return []
         clause = [lit]
@@ -1673,7 +1772,7 @@ class Snake():
             Ts_remainder = filter_ts_remainder_fast(Ts, clause[-1], self.header)
             iters = 0
             while len(Ts_remainder):
-                lit = _oppose(choice(Ts_remainder), F)
+                lit = self._oppose_lookahead(Ts_remainder, F)
                 if lit is None:
                     break
                 clause.append(lit)
@@ -1688,7 +1787,7 @@ class Snake():
             Ts_remainder = [T for T in Ts if not self.apply_literal(T, clause[-1])]
             iters = 0
             while len(Ts_remainder):
-                lit = _oppose(choice(Ts_remainder), F)
+                lit = self._oppose_lookahead(Ts_remainder, F)
                 if lit is None:
                     break
                 clause.append(lit)
@@ -2294,7 +2393,7 @@ class Snake():
 
     def to_json(self, fout="snakeclassifier.json"):
         snake_classifier = {
-            "version": "5.2.1",
+            "version": "5.3.0",
             "population": self.population,
             "header": self.header,
             "target": self.target,
@@ -2307,6 +2406,7 @@ class Snake():
                 "vocal": self.vocal,
                 "workers": self.workers,
                 "oppose_profile": getattr(self, 'oppose_profile', 'auto'),
+                "lookahead": getattr(self, 'lookahead', 5),
             },
             "layers": self.layers,
             "log": self.log
@@ -2338,6 +2438,7 @@ class Snake():
             self.vocal = cfg.get("vocal", self.vocal)
             self.workers = cfg.get("workers", 1)
             self.oppose_profile = cfg.get("oppose_profile", "auto")
+            self.lookahead = cfg.get("lookahead", 5)
         elif "n_layers" in loaded_module:
             self.n_layers = loaded_module["n_layers"]
             self.vocal = loaded_module.get("vocal", self.vocal)
@@ -2465,7 +2566,7 @@ class Snake():
 _worker_data = {}
 
 
-def _init_worker(population, targets, header, datatypes, oppose_profile=None, col_stats=None):
+def _init_worker(population, targets, header, datatypes, oppose_profile=None, col_stats=None, feature_mi=None, lookahead=5):
     """Pool initializer — sends large data once per worker process."""
     global _worker_data
     _worker_data = {
@@ -2475,6 +2576,8 @@ def _init_worker(population, targets, header, datatypes, oppose_profile=None, co
         "datatypes": datatypes,
         "oppose_profile": oppose_profile,
         "col_stats": col_stats or {},
+        "feature_mi": feature_mi or {},
+        "lookahead": lookahead,
     }
 
 
@@ -2515,6 +2618,8 @@ def _build_layer_worker(args):
     s.workers = 1
     s.oppose_profile = _worker_data.get("oppose_profile", "auto")
     s._col_stats = _worker_data.get("col_stats", {})
+    s._feature_mi = _worker_data.get("feature_mi", {})
+    s.lookahead = _worker_data.get("lookahead", 5)
     s._t0 = time()
     s._avg_per_layer = 0
     s._current_layer = layer_idx
