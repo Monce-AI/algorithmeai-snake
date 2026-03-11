@@ -20,7 +20,7 @@ except ImportError:
 #                                                              #
 #    Algorithme.ai : Snake         Author : Charles Dana       #
 #                                                              #
-#    v5.3.0 — SAT-ensembled bucketed multiclass classifier     #
+#    v5.4.0 — SAT-ensembled bucketed multiclass classifier     #
 #                                                              #
 ################################################################
 
@@ -28,7 +28,7 @@ _BANNER = """################################################################
 #                                                              #
 #    Algorithme.ai : Snake         Author : Charles Dana       #
 #                                                              #
-#    v5.3.0 — SAT-ensembled bucketed multiclass classifier     #
+#    v5.4.0 — SAT-ensembled bucketed multiclass classifier     #
 #                                                              #
 ################################################################
 """
@@ -2393,7 +2393,7 @@ class Snake():
 
     def to_json(self, fout="snakeclassifier.json"):
         snake_classifier = {
-            "version": "5.3.0",
+            "version": "5.4.0",
             "population": self.population,
             "header": self.header,
             "target": self.target,

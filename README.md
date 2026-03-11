@@ -5,7 +5,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-Proprietary-red.svg?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAxTDMgNXY2YzcgNCA4LjUgOC40IDkgMTIuOEM5LjUgMjAuNCA4IDE2IDggMTFWNmw0LTIuNUwxNiA2djVjMCA1LTEuNSA5LjQtNCAxa)](LICENSE)
-[![Version](https://img.shields.io/badge/v5.3.0-Shannon_MI_+_Lookahead-blueviolet.svg?logo=semanticrelease)](https://github.com/Monce-AI/algorithmeai-snake/releases/tag/v5.3.0)
+[![Version](https://img.shields.io/badge/v5.4.0-Shannon_MI_+_Lookahead-blueviolet.svg?logo=semanticrelease)](https://github.com/Monce-AI/algorithmeai-snake/releases/tag/v5.4.0)
 [![Build](https://img.shields.io/badge/Build-256_tests_passing-brightgreen.svg?logo=githubactions&logoColor=white)](#testing)
 [![Profiles](https://img.shields.io/badge/Profiles-7_oppose_strategies-orange.svg?logo=probot&logoColor=white)](#oppose-profiles-v520)
 
@@ -43,7 +43,7 @@ Input X  →  Match SAT clauses  →  Find lookalikes  →  Vote  →  Predictio
 > Because: `"petal_length" <= 2.45` AND `"petal_width" <= 0.8`
 > Matched 15 lookalikes, all class `setosa`.
 
-**v5.3.0** adds **Shannon MI-weighted feature selection** and **lookahead literal selection** — the first principled feature importance mechanism in Snake. On 500-feature datasets with 20 informative features, **+12.6pp AUROC** over v5.2.1. Zero regressions on classical datasets.
+**v5.4.0** adds **Shannon MI-weighted feature selection** and **lookahead literal selection** — the first principled feature importance mechanism in Snake. On 500-feature datasets with 20 informative features, **+12.6pp AUROC** over v5.2.1. Zero regressions on classical datasets.
 
 ## Install
 
@@ -90,17 +90,17 @@ model = Snake("model.json")       # Auto-detected by .json extension
 print(model.get_prediction(X))    # Same result
 ```
 
-## MI-Weighted Feature Selection (v5.3.0)
+## MI-Weighted Feature Selection (v5.4.0)
 
 The Shannon signature. On high-dimensional data, oppose() used to pick features **uniformly at random**. With 20 informative features out of 500, that's a **4% hit rate on signal**. The rest is noise.
 
-v5.3.0 precomputes **mutual information** `MI(feature; target)` for each feature — the exact quantity decision trees maximize at each split (Quinlan 1986). oppose() now picks features **proportionally to MI weight**:
+v5.4.0 precomputes **mutual information** `MI(feature; target)` for each feature — the exact quantity decision trees maximize at each split (Quinlan 1986). oppose() now picks features **proportionally to MI weight**:
 
 ```python
 # Before (v5.2.1): uniform random
 index = choice(candidates)
 
-# After (v5.3.0): MI-weighted
+# After (v5.4.0): MI-weighted
 index = choices(candidates, weights=MI_weights)[0]
 ```
 
@@ -119,7 +119,7 @@ Computed once in O(n×m), passed to all workers. Numeric features are quantile-b
 | 20 / 500 | 4.0% | 10.8% | 2.7× |
 | 50 / 500 | 10.0% | 25.0% | 2.5× |
 
-## Lookahead Literal Selection (v5.3.0)
+## Lookahead Literal Selection (v5.4.0)
 
 MI weights decide **which features** to try. Lookahead decides **which literal to keep**.
 
@@ -136,7 +136,7 @@ lit = max(candidates, key=lambda l: coverage(l, Ts))
 
 On classical data, this produces **fewer, tighter clauses**:
 
-| Dataset | v5.2.1 clauses | v5.3.0 clauses | Reduction |
+| Dataset | v5.2.1 clauses | v5.4.0 clauses | Reduction |
 |---------|---------------|---------------|-----------|
 | Breast Cancer | 872 | 783 | -10.2% |
 | Digits | 10,195 | 9,061 | -11.1% |
@@ -149,13 +149,13 @@ model = Snake(data, lookahead=1)   # v5.2.1 behavior
 model = Snake(data, lookahead=10)  # slower, tighter clauses
 ```
 
-## A/B: v5.3.0 vs v5.2.1
+## A/B: v5.4.0 vs v5.2.1
 
 Tested on Hard Madelon (500 features, weak Gaussian signal in n informative features, noise in the rest) and classical sklearn datasets. Same seeds, same splits.
 
 **High-dimensional (the MI sweet spot):**
 
-| Dataset (500 features) | v5.2.1 AUROC | v5.3.0 AUROC | Delta |
+| Dataset (500 features) | v5.2.1 AUROC | v5.4.0 AUROC | Delta |
 |------------------------|-------------|-------------|-------|
 | 5 informative, signal=1.2 | 0.526 | **0.727** | **+20.1pp** |
 | 20 informative, signal=0.8 | 0.587 | **0.712** | **+12.6pp** |
@@ -164,7 +164,7 @@ Tested on Hard Madelon (500 features, weak Gaussian signal in n informative feat
 
 **Classical (no regression):**
 
-| Dataset | Features | v5.2.1 AUROC | v5.3.0 AUROC | Delta |
+| Dataset | Features | v5.2.1 AUROC | v5.4.0 AUROC | Delta |
 |---------|----------|-------------|-------------|-------|
 | Breast Cancer | 30 | 0.996 | **0.998** | +0.2pp |
 | Iris | 4 | 0.993 | **0.998** | +0.5pp |
@@ -623,7 +623,7 @@ The banner only prints when `vocal=True`.
 
 ## Optional: Cython Acceleration
 
-Snake includes optional Cython-accelerated hot paths for `apply_literal`, `apply_clause`, and `traverse_chain`. When compiled, these provide ~3× speedups for both training and inference. The lookahead coverage check in v5.3.0 automatically benefits from `apply_literal_fast`.
+Snake includes optional Cython-accelerated hot paths for `apply_literal`, `apply_clause`, and `traverse_chain`. When compiled, these provide ~3× speedups for both training and inference. The lookahead coverage check in v5.4.0 automatically benefits from `apply_literal_fast`.
 
 ```bash
 # Install with Cython support
@@ -655,16 +655,16 @@ pytest tests/test_feature_mi.py       # MI precompute, weighted sampling, lookah
 
 ## Changelog
 
-### v5.3.0 (Mar 2026)
+### v5.4.0 (Mar 2026)
 
 - **MI-weighted feature selection**: `_precompute_feature_mi()` computes Shannon mutual information `MI(feature; target)` for every feature in O(n×m). All 7 oppose profiles + the original `oppose()` now pick features proportionally to MI weight instead of uniformly. On 500-feature datasets: P(oppose picks informative feature) jumps from 4% to 10.8% (2.7× lift)
 - **Lookahead literal selection**: `_oppose_lookahead()` generates K=5 candidate literals per position in `construct_clause`, keeps the one covering the most Ts. Produces 10-13% fewer clauses on classical datasets — tighter clauses generalize better
-- **+20pp AUROC on hard high-dimensional data**: 5 informative features out of 500 at signal=1.2: v5.2.1 AUROC 0.526 → v5.3.0 AUROC **0.727**. 50/500 at signal=0.8: 0.711 → **0.850**
+- **+20pp AUROC on hard high-dimensional data**: 5 informative features out of 500 at signal=1.2: v5.2.1 AUROC 0.526 → v5.4.0 AUROC **0.727**. 50/500 at signal=0.8: 0.711 → **0.850**
 - **Zero classical regressions**: Breast Cancer +0.2pp, Iris +0.5pp, Wine +0.1pp (perfect 1.000), Digits -0.1pp (noise)
 - **New parameter `lookahead=5`**: Controls literal candidates per oppose call. `1` = v5.2.1 behavior. Stored in JSON config, backwards compatible (defaults to 5 for old models)
 - **Worker pipeline**: MI weights and lookahead passed to parallel workers via `_init_worker`
 - **256 tests** across 12 files (20 new MI/lookahead tests)
-- **Benchmark script**: `benchmark_mi.py` — A/B comparison of v5.2.1 vs v5.3.0 on Hard Madelon + classical datasets
+- **Benchmark script**: `benchmark_mi.py` — A/B comparison of v5.2.1 vs v5.4.0 on Hard Madelon + classical datasets
 
 ### v5.2.1 (Mar 2026)
 
