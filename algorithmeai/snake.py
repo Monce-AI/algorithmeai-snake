@@ -1102,7 +1102,7 @@ class Snake():
             if d == 0:
                 return None
             threshold = d / 2
-            return [index, [tv, threshold], len(tv) < len(fv), "LEV"]
+            return [index, [tv, threshold], True, "LEV"]
         else:
             j = _jaccard_bigrams(tv, fv)
             threshold = (j + 1.0) / 2
@@ -1332,7 +1332,7 @@ class Snake():
         if chi_sq == 0:
             return None
         threshold = chi_sq / 2
-        return [index, [ref_freq, threshold], False, "CFC"]
+        return [index, [ref_freq, threshold], True, "CFC"]
 
     # --- Profile oppose methods (flat inline, no dispatch overhead) ---
 
@@ -1740,15 +1740,21 @@ class Snake():
         return False
 
     def _oppose_lookahead(self, Ts, F):
-        """Generate K oppose literals, return the one covering the most Ts."""
+        """Generate K oppose literals, return the one covering the most Ts.
+        Guard: reject any literal that is True on F (can't eliminate F)."""
         k = getattr(self, 'lookahead', 5)
         _oppose = self._active_oppose if hasattr(self, '_active_oppose') else self.oppose
         if k <= 1:
-            return _oppose(choice(Ts), F)
+            lit = _oppose(choice(Ts), F)
+            if lit is not None and self.apply_literal(F, lit):
+                return None
+            return lit
         best_lit, best_cov = None, -1
         for _ in range(k):
             lit = _oppose(choice(Ts), F)
             if lit is None:
+                continue
+            if self.apply_literal(F, lit):
                 continue
             cov = sum(1 for t in Ts if self.apply_literal(t, lit))
             if cov > best_cov:
@@ -2393,7 +2399,7 @@ class Snake():
 
     def to_json(self, fout="snakeclassifier.json"):
         snake_classifier = {
-            "version": "5.4.0",
+            "version": "5.4.1",
             "population": self.population,
             "header": self.header,
             "target": self.target,

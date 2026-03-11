@@ -570,6 +570,13 @@ The audit system produces two AND statements per layer:
 
 ## Changelog
 
+### v5.4.1 (Mar 2026)
+
+- **Oppose guard — infinite loop fix**: `_oppose_lookahead` now rejects any literal that evaluates True on F (the sample it's supposed to eliminate). O(1) check per candidate via `apply_literal(F, lit)`. Catches all broken generators — past, present, and future.
+- **LEV negat fix**: Was `negat = len(tv) < len(fv)` — inverted 50% of the time (literal True on F, False on T when len(tv) >= len(fv)). Now always `True` (distance ≤ threshold = close to ref).
+- **CFC negat fix**: Was `negat = False` — 100% inverted (literal always False on T, True on F). Now `True` (chi-sq < threshold = similar to T's frequency distribution).
+- **Root cause**: Generators using threshold = `(measured_on_F + max_on_T) / 2` produce useless literals when `measured_on_F == max_on_T`. The literal is True on both T and F, construct_clause can't eliminate F, and loops until the safety break. Lookahead made it worse by preferring these literals (high Ts coverage because they're True on everything).
+
 ### v5.2.1 (Mar 2026)
 
 - **O(n) string distance**: `_levenshtein` uses exact Wagner-Fischer DP for strings ≤32 chars, char-frequency bag distance for longer strings. No truncation — full signal preserved, O(n) compute. Same for `_jaccard_bigrams` and `_repeat_period_score`.
