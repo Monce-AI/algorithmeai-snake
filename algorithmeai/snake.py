@@ -20,7 +20,7 @@ except ImportError:
 #                                                              #
 #    Algorithme.ai : Snake         Author : Charles Dana       #
 #                                                              #
-#    v5.4.0 — SAT-ensembled bucketed multiclass classifier     #
+#    v5.4.2 — SAT-ensembled bucketed multiclass classifier     #
 #                                                              #
 ################################################################
 
@@ -28,7 +28,7 @@ _BANNER = """################################################################
 #                                                              #
 #    Algorithme.ai : Snake         Author : Charles Dana       #
 #                                                              #
-#    v5.4.0 — SAT-ensembled bucketed multiclass classifier     #
+#    v5.4.2 — SAT-ensembled bucketed multiclass classifier     #
 #                                                              #
 ################################################################
 """
@@ -1741,20 +1741,22 @@ class Snake():
 
     def _oppose_lookahead(self, Ts, F):
         """Generate K oppose literals, return the one covering the most Ts.
-        Guard: reject any literal that is True on F (can't eliminate F)."""
+        Guard: reject any literal that is True on F OR not True on T."""
         k = getattr(self, 'lookahead', 5)
         _oppose = self._active_oppose if hasattr(self, '_active_oppose') else self.oppose
         if k <= 1:
-            lit = _oppose(choice(Ts), F)
-            if lit is not None and self.apply_literal(F, lit):
+            T = choice(Ts)
+            lit = _oppose(T, F)
+            if lit is not None and (self.apply_literal(F, lit) or not self.apply_literal(T, lit)):
                 return None
             return lit
         best_lit, best_cov = None, -1
         for _ in range(k):
-            lit = _oppose(choice(Ts), F)
+            T = choice(Ts)
+            lit = _oppose(T, F)
             if lit is None:
                 continue
-            if self.apply_literal(F, lit):
+            if self.apply_literal(F, lit) or not self.apply_literal(T, lit):
                 continue
             cov = sum(1 for t in Ts if self.apply_literal(t, lit))
             if cov > best_cov:
@@ -1768,8 +1770,18 @@ class Snake():
     - False on at least F
     - Minimal
     """
+    def _oppose_fallback(self, Ts, F):
+        """Last resort: original oppose() with guard. Never returns a broken literal."""
+        T = choice(Ts)
+        lit = self.oppose(T, F)
+        if lit is not None and (self.apply_literal(F, lit) or not self.apply_literal(T, lit)):
+            return None
+        return lit
+
     def construct_clause(self, F, Ts):
         lit = self._oppose_lookahead(Ts, F)
+        if lit is None:
+            lit = self._oppose_fallback(Ts, F)
         if lit is None:
             return []
         clause = [lit]
@@ -1779,6 +1791,8 @@ class Snake():
             iters = 0
             while len(Ts_remainder):
                 lit = self._oppose_lookahead(Ts_remainder, F)
+                if lit is None:
+                    lit = self._oppose_fallback(Ts_remainder, F)
                 if lit is None:
                     break
                 clause.append(lit)
@@ -1794,6 +1808,8 @@ class Snake():
             iters = 0
             while len(Ts_remainder):
                 lit = self._oppose_lookahead(Ts_remainder, F)
+                if lit is None:
+                    lit = self._oppose_fallback(Ts_remainder, F)
                 if lit is None:
                     break
                 clause.append(lit)
@@ -1976,7 +1992,6 @@ class Snake():
         if _HAS_ACCEL:
             return get_lookalikes_fast(self.layers, X, self.header, self.targets)
         all_lookalikes = []
-        seen = set()
         for layer in self.layers:
             bucket = traverse_chain(layer, X, self.apply_literal)
             if bucket is None:
@@ -1987,16 +2002,13 @@ class Snake():
                 for condition in bucket["lookalikes"][l]:
                     if all(c_idx in negated for c_idx in condition):
                         global_idx = bucket["members"][int(l)]
-                        if global_idx not in seen:
-                            seen.add(global_idx)
-                            all_lookalikes.append([global_idx, self.targets[global_idx], condition])
+                        all_lookalikes.append([global_idx, self.targets[global_idx], condition])
         return all_lookalikes
 
     def get_lookalikes_labeled(self, X):
         """Like get_lookalikes but each entry includes origin: 'c' (core) or 'n' (noise).
         Returns list of [global_idx, target_value, condition, origin]."""
         all_lookalikes = []
-        seen = set()
         for layer in self.layers:
             bucket = traverse_chain(layer, X, self.apply_literal)
             if bucket is None:
@@ -2008,10 +2020,8 @@ class Snake():
                 for condition in bucket["lookalikes"][l]:
                     if all(c_idx in negated for c_idx in condition):
                         global_idx = bucket["members"][int(l)]
-                        if global_idx not in seen:
-                            seen.add(global_idx)
-                            origin = origins[int(l)] if origins else "c"
-                            all_lookalikes.append([global_idx, self.targets[global_idx], condition, origin])
+                        origin = origins[int(l)] if origins else "c"
+                        all_lookalikes.append([global_idx, self.targets[global_idx], condition, origin])
         return all_lookalikes
 
     def _get_probability_from_lookalikes(self, lookalikes):
@@ -2399,7 +2409,7 @@ class Snake():
 
     def to_json(self, fout="snakeclassifier.json"):
         snake_classifier = {
-            "version": "5.4.1",
+            "version": "5.4.2",
             "population": self.population,
             "header": self.header,
             "target": self.target,

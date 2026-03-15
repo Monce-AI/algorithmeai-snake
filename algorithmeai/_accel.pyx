@@ -353,7 +353,6 @@ def traverse_chain_fast(list chain, dict X, list header):
 def get_lookalikes_fast(list layers, dict X, list header, list targets):
     """Cython version of Snake.get_lookalikes — full inference in C."""
     cdef list all_lookalikes = []
-    cdef set seen = set()
     cdef list layer, clause_bool
     cdef dict bucket
     cdef set negated
@@ -376,9 +375,7 @@ def get_lookalikes_fast(list layers, dict X, list header, list targets):
                         break
                 if all_negated:
                     global_idx = bucket["members"][int(l)]
-                    if global_idx not in seen:
-                        seen.add(global_idx)
-                        all_lookalikes.append([global_idx, targets[global_idx], condition])
+                    all_lookalikes.append([global_idx, targets[global_idx], condition])
     return all_lookalikes
 
 
@@ -467,7 +464,6 @@ def batch_get_lookalikes_fast(list layers, list Xs, list header, list targets):
     cdef int n_queries = len(Xs)
     cdef int q_idx, i, global_idx, c_idx
     cdef list result = [[] for _ in range(n_queries)]
-    cdef list seen_sets = [set() for _ in range(n_queries)]
     cdef dict X, bucket, grouped
     cdef list layer, clause_bool, condition
     cdef set negated
@@ -505,9 +501,7 @@ def batch_get_lookalikes_fast(list layers, list Xs, list header, list targets):
                                 break
                         if all_negated:
                             global_idx = members[int(l)]
-                            if global_idx not in seen_sets[q_idx]:
-                                seen_sets[q_idx].add(global_idx)
-                                result[q_idx].append([global_idx, targets[global_idx], condition])
+                            result[q_idx].append([global_idx, targets[global_idx], condition])
 
     return result
 
