@@ -628,6 +628,7 @@ class Snake():
                                     self._feature_mi, self.lookahead)) as pool:
                 for i, layer in enumerate(pool.imap_unordered(_build_layer_worker, jobs)):
                     self.layers.append(layer)
+                    self._verify_layer(layer, len(self.layers))
                     elapsed = time() - self._t0
                     layers_done = len(self.layers)
                     layers_left = self.n_layers - layers_done
@@ -649,6 +650,7 @@ class Snake():
                 self.qprint(f"#")
                 self.qprint(f"# >>> LAYER {i+1}/{self.n_layers} — starting construction...")
                 self.construct_layer()
+                self._verify_layer(self.layers[-1], i + 1)
                 t_layer_end = time()
                 layer_time = t_layer_end - t_layer_start
                 elapsed_total = t_layer_end - self._t0
@@ -683,6 +685,63 @@ class Snake():
 
         if saved:
             self.to_json()
+
+    def _verify_layer(self, layer, layer_idx):
+        """Clause contract verification — runs in main process after layer assembly.
+        For each bucket: evaluate each clause ONCE per member, then check
+        that no member gets a wrong-class lookalike."""
+        for b_idx, bucket in enumerate(layer):
+            members = bucket["members"]
+            clauses = bucket["clauses"]
+            lookalikes_map = bucket["lookalikes"]
+            n = len(members)
+            local_targets = [self.targets[members[i]] for i in range(n)]
+
+            # Evaluate all clauses on all members ONCE: clause_results[mi] = set of negated clause indices
+            member_negated = []
+            for mi in range(n):
+                member = self.population[members[mi]]
+                negated = set()
+                for ci, clause in enumerate(clauses):
+                    if not self.apply_clause(member, clause):
+                        negated.add(ci)
+                member_negated.append(negated)
+
+            # Check: no member gets a wrong-class lookalike
+            for mi in range(n):
+                negated = member_negated[mi]
+                member_target = local_targets[mi]
+                for li_str in lookalikes_map:
+                    li = int(li_str)
+                    la_target = local_targets[li]
+                    if la_target == member_target:
+                        continue
+                    for condition in lookalikes_map[li_str]:
+                        if all(ci in negated for ci in condition):
+                            import json as _j
+                            _dump = {
+                                "error": "wrong-class lookalike",
+                                "layer": layer_idx, "bucket": b_idx,
+                                "member_local_idx": mi,
+                                "member_global_idx": members[mi],
+                                "member_target": str(member_target),
+                                "lookalike_local_idx": li,
+                                "lookalike_global_idx": members[li],
+                                "lookalike_target": str(la_target),
+                                "condition_clause_indices": condition,
+                                "failing_clauses": [{
+                                    "clause_idx": ci,
+                                    "clause": str(clauses[ci]),
+                                    "per_literal": [
+                                        {"literal": str(lit), "eval": self.apply_literal(self.population[members[mi]], lit)}
+                                        for lit in clauses[ci]
+                                    ]
+                                } for ci in condition if ci in negated],
+                            }
+                            with open("/tmp/snake_fatal.json", "w") as _ef:
+                                _ef.write(_j.dumps(_dump, indent=2))
+                            exit(f"FATAL: layer {layer_idx} bucket {b_idx} — member[{mi}] class {member_target} "
+                                 f"gets lookalike[{li}] class {la_target} — /tmp/snake_fatal.json")
 
     # ------------------------------------------------------------------
     # Utility
@@ -1859,6 +1918,28 @@ class Snake():
                     Fs = [f for f in Fs if f is not F]
                     self.qprint(f"# WARNING: empty clause for target [{target_value}], {len(Fs)} Fs remaining", level=2)
                     continue
+                # --- Inline clause contract check ---
+                broken = [T for T in Ts if not self.apply_clause(T, clause)]
+                if broken:
+                    import json as _j
+                    _dump = {
+                        "error": "clause FALSE on T immediately after construct_clause",
+                        "target_value": str(target_value),
+                        "n_broken": len(broken),
+                        "clause_len": len(clause),
+                        "clause": str(clause),
+                        "F": {k: str(v) for k, v in F.items()},
+                        "broken_T": {k: str(v) for k, v in broken[0].items()},
+                        "broken_T_class": str(broken[0].get(self.target, "?")),
+                        "per_literal": [
+                            {"literal": str(lit), "on_F": self.apply_literal(F, lit), "on_broken_T": self.apply_literal(broken[0], lit)}
+                            for lit in clause
+                        ],
+                    }
+                    with open("/tmp/snake_fatal.json", "w") as _ef:
+                        _ef.write(_j.dumps(_dump, indent=2))
+                    exit(f"FATAL: clause FALSE on {len(broken)} Ts — /tmp/snake_fatal.json")
+                # --- End check ---
                 if _HAS_ACCEL:
                     consequence, _ = filter_consequence_fast(local_pop, local_targets, target_value, clause, self.header)
                 else:
@@ -1887,51 +1968,6 @@ class Snake():
 
         total_sat_time = time() - t_sat_all
         self.qprint(f"#     [SAT] local SAT complete: {len(local_clauses)} total clauses in {total_sat_time:.2f}s")
-
-        # --- Post-construction clause contract verification ---
-        # Every clause belongs to a target class. It must be:
-        #   FALSE on its consequence members (same-class positives it captures)
-        #   TRUE on every non-target member (Ts)
-        # Simulate inference: for each member, check that it gets ONLY same-class lookalikes.
-        for mi in range(len(local_pop)):
-            member = local_pop[mi]
-            member_target = local_targets[mi]
-            clause_bool = [self.apply_clause(member, c) for c in local_clauses]
-            negated = {ci for ci in range(len(clause_bool)) if not clause_bool[ci]}
-            for li_str in local_lookalikes:
-                li = int(li_str)
-                la_target = local_targets[li]
-                if la_target == member_target:
-                    continue  # same class — allowed
-                for condition in local_lookalikes[li_str]:
-                    if all(ci in negated for ci in condition):
-                        # Wrong-class lookalike found — a clause from la_target's SAT
-                        # is FALSE on member, meaning member (a T) wasn't covered.
-                        import json as _j
-                        _dump = {
-                            "error": "wrong-class lookalike in bucket",
-                            "member_idx": mi,
-                            "member_target": str(member_target),
-                            "lookalike_idx": li,
-                            "lookalike_target": str(la_target),
-                            "condition_clause_indices": condition,
-                            "failing_clauses": [],
-                        }
-                        for ci in condition:
-                            if ci in negated:
-                                _dump["failing_clauses"].append({
-                                    "clause_idx": ci,
-                                    "clause": str(local_clauses[ci]),
-                                    "per_literal": [
-                                        {"literal": str(lit), "eval_on_member": self.apply_literal(member, lit)}
-                                        for lit in local_clauses[ci]
-                                    ]
-                                })
-                        with open("/tmp/snake_fatal.json", "w") as _ef:
-                            _ef.write(_j.dumps(_dump, indent=2))
-                        exit(f"FATAL: wrong-class lookalike — member[{mi}] class {member_target} gets lookalike[{li}] class {la_target} — /tmp/snake_fatal.json")
-        self.qprint(f"#     [SAT] contract verified: all clauses discriminate correctly")
-        # --- End verification ---
 
         return local_clauses, local_lookalikes
 
@@ -1995,7 +2031,25 @@ class Snake():
     """
     Predict the probability vector for a given X
     """
+    def _normalize_features(self, X):
+        """Convert input feature values to match population types (float for N, str for T).
+        Without this, str(int_val) != str(float_val) and literal types like ND/TUC/TDC/TSC
+        produce different results at inference vs training."""
+        out = {}
+        for i in range(1, len(self.header)):
+            h = self.header[i]
+            if h in X:
+                if self.datatypes[i] == "N":
+                    try:
+                        out[h] = float(X[h])
+                    except (ValueError, TypeError):
+                        out[h] = X[h]
+                else:
+                    out[h] = X[h]
+        return out
+
     def get_lookalikes(self, X):
+        X = self._normalize_features(X)
         if _HAS_ACCEL:
             return get_lookalikes_fast(self.layers, X, self.header, self.targets)
         all_lookalikes = []
@@ -2015,6 +2069,7 @@ class Snake():
     def get_lookalikes_labeled(self, X):
         """Like get_lookalikes but each entry includes origin: 'c' (core) or 'n' (noise).
         Returns list of [global_idx, target_value, condition, origin]."""
+        X = self._normalize_features(X)
         all_lookalikes = []
         for layer in self.layers:
             bucket = traverse_chain(layer, X, self.apply_literal)
