@@ -1856,7 +1856,6 @@ class Snake():
                 F = choice(Fs)
                 clause = self.construct_clause(F, Ts)
                 if not clause:
-                    # F indistinguishable from Ts — remove it to avoid infinite loop
                     Fs = [f for f in Fs if f is not F]
                     self.qprint(f"# WARNING: empty clause for target [{target_value}], {len(Fs)} Fs remaining", level=2)
                     continue
@@ -1888,6 +1887,51 @@ class Snake():
 
         total_sat_time = time() - t_sat_all
         self.qprint(f"#     [SAT] local SAT complete: {len(local_clauses)} total clauses in {total_sat_time:.2f}s")
+
+        # --- Post-construction clause contract verification ---
+        # Every clause belongs to a target class. It must be:
+        #   FALSE on its consequence members (same-class positives it captures)
+        #   TRUE on every non-target member (Ts)
+        # Simulate inference: for each member, check that it gets ONLY same-class lookalikes.
+        for mi in range(len(local_pop)):
+            member = local_pop[mi]
+            member_target = local_targets[mi]
+            clause_bool = [self.apply_clause(member, c) for c in local_clauses]
+            negated = {ci for ci in range(len(clause_bool)) if not clause_bool[ci]}
+            for li_str in local_lookalikes:
+                li = int(li_str)
+                la_target = local_targets[li]
+                if la_target == member_target:
+                    continue  # same class — allowed
+                for condition in local_lookalikes[li_str]:
+                    if all(ci in negated for ci in condition):
+                        # Wrong-class lookalike found — a clause from la_target's SAT
+                        # is FALSE on member, meaning member (a T) wasn't covered.
+                        import json as _j
+                        _dump = {
+                            "error": "wrong-class lookalike in bucket",
+                            "member_idx": mi,
+                            "member_target": str(member_target),
+                            "lookalike_idx": li,
+                            "lookalike_target": str(la_target),
+                            "condition_clause_indices": condition,
+                            "failing_clauses": [],
+                        }
+                        for ci in condition:
+                            if ci in negated:
+                                _dump["failing_clauses"].append({
+                                    "clause_idx": ci,
+                                    "clause": str(local_clauses[ci]),
+                                    "per_literal": [
+                                        {"literal": str(lit), "eval_on_member": self.apply_literal(member, lit)}
+                                        for lit in local_clauses[ci]
+                                    ]
+                                })
+                        with open("/tmp/snake_fatal.json", "w") as _ef:
+                            _ef.write(_j.dumps(_dump, indent=2))
+                        exit(f"FATAL: wrong-class lookalike — member[{mi}] class {member_target} gets lookalike[{li}] class {la_target} — /tmp/snake_fatal.json")
+        self.qprint(f"#     [SAT] contract verified: all clauses discriminate correctly")
+        # --- End verification ---
 
         return local_clauses, local_lookalikes
 
