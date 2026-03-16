@@ -20,7 +20,7 @@ except ImportError:
 #                                                              #
 #    Algorithme.ai : Snake         Author : Charles Dana       #
 #                                                              #
-#    v5.4.2 — SAT-ensembled bucketed multiclass classifier     #
+#    v5.4.3 — SAT-ensembled bucketed multiclass classifier     #
 #                                                              #
 ################################################################
 
@@ -28,7 +28,7 @@ _BANNER = """################################################################
 #                                                              #
 #    Algorithme.ai : Snake         Author : Charles Dana       #
 #                                                              #
-#    v5.4.2 — SAT-ensembled bucketed multiclass classifier     #
+#    v5.4.3 — SAT-ensembled bucketed multiclass classifier     #
 #                                                              #
 ################################################################
 """
@@ -1770,67 +1770,30 @@ class Snake():
     - False on at least F
     - Minimal
     """
-    def _oppose_fallback(self, Ts, F):
-        """Last resort: original oppose() with guard. Never returns a broken literal."""
-        T = choice(Ts)
-        lit = self.oppose(T, F)
-        if lit is not None and (self.apply_literal(F, lit) or not self.apply_literal(T, lit)):
-            return None
-        return lit
-
     def construct_clause(self, F, Ts):
         lit = self._oppose_lookahead(Ts, F)
         if lit is None:
-            lit = self._oppose_fallback(Ts, F)
-        if lit is None:
-            return []
+            lit = self.oppose(choice(Ts), F)
         clause = [lit]
-        max_iters = len(Ts) * 2
-        if _HAS_ACCEL:
-            Ts_remainder = filter_ts_remainder_fast(Ts, clause[-1], self.header)
-            iters = 0
-            while len(Ts_remainder):
-                lit = self._oppose_lookahead(Ts_remainder, F)
-                if lit is None:
-                    lit = self._oppose_fallback(Ts_remainder, F)
-                if lit is None:
+        Ts_remainder = [T for T in Ts if not self.apply_literal(T, clause[-1])]
+        while len(Ts_remainder):
+            lit = self._oppose_lookahead(Ts_remainder, F)
+            if lit is None:
+                lit = self.oppose(choice(Ts_remainder), F)
+            clause.append(lit)
+            Ts_remainder = [T for T in Ts_remainder if not self.apply_literal(T, clause[-1])]
+        i = 0
+        while i < len(clause):
+            sub_clause = [clause[j] for j in range(len(clause)) if i != j]
+            minimal_test = False
+            for T in Ts:
+                if not self.apply_clause(T, sub_clause):
+                    minimal_test = True
                     break
-                clause.append(lit)
-                prev_len = len(Ts_remainder)
-                Ts_remainder = filter_ts_remainder_fast(Ts_remainder, clause[-1], self.header)
-                iters += 1
-                if len(Ts_remainder) >= prev_len or iters > max_iters:
-                    self.qprint(f"# WARNING: construct_clause no progress — {len(Ts_remainder)} Ts stuck, breaking", level=2)
-                    break
-            clause = minimize_clause_fast(clause, Ts, self.header)
-        else:
-            Ts_remainder = [T for T in Ts if not self.apply_literal(T, clause[-1])]
-            iters = 0
-            while len(Ts_remainder):
-                lit = self._oppose_lookahead(Ts_remainder, F)
-                if lit is None:
-                    lit = self._oppose_fallback(Ts_remainder, F)
-                if lit is None:
-                    break
-                clause.append(lit)
-                prev_len = len(Ts_remainder)
-                Ts_remainder = [T for T in Ts_remainder if not self.apply_literal(T, clause[-1])]
-                iters += 1
-                if len(Ts_remainder) >= prev_len or iters > max_iters:
-                    self.qprint(f"# WARNING: construct_clause no progress — {len(Ts_remainder)} Ts stuck, breaking", level=2)
-                    break
-            i = 0
-            while i < len(clause):
-                sub_clause = [clause[j] for j in range(len(clause)) if i != j]
-                minimal_test = False
-                for T in Ts:
-                    if not self.apply_clause(T, sub_clause):
-                        minimal_test = True
-                        break
-                if minimal_test:
-                    i += 1
-                else:
-                    clause = sub_clause
+            if minimal_test:
+                i += 1
+            else:
+                clause = sub_clause
         return clause
 
     """
@@ -2409,7 +2372,7 @@ class Snake():
 
     def to_json(self, fout="snakeclassifier.json"):
         snake_classifier = {
-            "version": "5.4.2",
+            "version": "5.4.3",
             "population": self.population,
             "header": self.header,
             "target": self.target,
