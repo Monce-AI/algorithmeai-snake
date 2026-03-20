@@ -5,9 +5,9 @@
 
 [![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-Proprietary-red.svg?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAxTDMgNXY2YzcgNCA4LjUgOC40IDkgMTIuOEM5LjUgMjAuNCA4IDE2IDggMTFWNmw0LTIuNUwxNiA2djVjMCA1LTEuNSA5LjQtNCAxa)](LICENSE)
-[![Version](https://img.shields.io/badge/v5.4.0-Shannon_MI_+_Lookahead-blueviolet.svg?logo=semanticrelease)](https://github.com/Monce-AI/algorithmeai-snake/releases/tag/v5.4.0)
+[![Version](https://img.shields.io/badge/v5.4.4-SIM_literal_+_HEF_profile-blueviolet.svg?logo=semanticrelease)](https://github.com/Monce-AI/algorithmeai-snake/releases/tag/v5.4.4)
 [![Build](https://img.shields.io/badge/Build-256_tests_passing-brightgreen.svg?logo=githubactions&logoColor=white)](#testing)
-[![Profiles](https://img.shields.io/badge/Profiles-7_oppose_strategies-orange.svg?logo=probot&logoColor=white)](#oppose-profiles-v520)
+[![Profiles](https://img.shields.io/badge/Profiles-8_oppose_strategies-orange.svg?logo=probot&logoColor=white)](#oppose-profiles-v520)
 
 [![Production](https://img.shields.io/badge/Production-Live_on_AWS-FF9900.svg?logo=amazonaws&logoColor=white)](https://snake.aws.monce.ai)
 [![API](https://img.shields.io/badge/API-snake.aws.monce.ai-009688.svg?logo=fastapi&logoColor=white)](https://snake.aws.monce.ai/health)
@@ -16,7 +16,7 @@
 
 [![Algorithm](https://img.shields.io/badge/Algorithm-SAT--based_Lookalikes-7B2D8B.svg?logo=probot&logoColor=white)](#what-is-snake)
 [![XAI](https://img.shields.io/badge/XAI-Fully_Explainable-FF6F00.svg?logo=opensourceinitiative&logoColor=white)](#prediction-api)
-[![Literals](https://img.shields.io/badge/Literals-30_boolean_test_types-lightgrey.svg?logo=wolframmathematica)](#oppose-type-formalism)
+[![Literals](https://img.shields.io/badge/Literals-29_boolean_test_types-lightgrey.svg?logo=wolframmathematica)](#oppose-type-formalism)
 [![Cython](https://img.shields.io/badge/Cython-Optional_3x_speedup-E91E63.svg?logo=stackblitz&logoColor=white)](#optional-cython-acceleration)
 
 [![Shannon](https://img.shields.io/badge/Shannon-MI--Weighted_Feature_Selection-0078D4.svg?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyQzYuNDggMiAyIDYuNDggMiAxMnM0LjQ4IDEwIDEwIDEwIDEwLTQuNDggMTAtMTBTMTcuNTIgMiAxMiAyem0wIDE4Yy00LjQyIDAtOC0zLjU4LTgtOHMzLjU4LTggOC04IDggMy41OCA4IDgtMy41OCA4LTggNHoiLz48L3N2Zz4=)](#mi-weighted-feature-selection-v530)
@@ -654,6 +654,14 @@ pytest tests/test_feature_mi.py       # MI precompute, weighted sampling, lookah
 256 tests across 12 files. Tests use `tests/fixtures/sample.csv` (15 rows, 3 classes) with small `n_layers` (1–3) and `bucket` (3–5) for speed.
 
 ## Changelog
+
+### v5.4.4 (Mar 2026)
+
+- **New literal type: SIM** — subsequence match ratio with N-style midpoint thresholding. Combines T's substring generation with N's continuous logic. `_text_score(field, ref)` returns the fraction of `ref`'s characters found in `field` in order. O(len(field)), single pass, 8× substring cost. Snake's SAT construction picks the ref string and threshold — the literal stores `[ref, threshold]` and evaluates `score >= threshold`
+- **New oppose profile: HEF** — SIM-dominant profile for part number matching. Short alphanumeric strings (5-30 chars) where customers send variant refs for the same catalog article. Weights: SIM:35 TEQ:15 PFX:13 SFX:13 JAC:10 T:8. No LEV — SIM handles fuzzy matching at 30× less cost
+- **LEV exact DP raised to 256 chars** — was 32. Bag-of-chars fallback only kicks in above 256 chars. All practical strings now use exact Wagner-Fischer DP
+- **Tested on HEF production data**: Pernat (9 articles) `"S700376REC"` → `ARAA03-700376-A2` at **90% confidence** (was 20% with industrial profile). The SIM literal catches that "700376" is a subsequence of "S700376REC"
+- **256 tests passing**, zero regressions
 
 ### v5.4.0 (Mar 2026)
 

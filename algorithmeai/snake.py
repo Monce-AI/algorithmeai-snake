@@ -37,7 +37,7 @@ _BANNER = """################################################################
 # Oppose profile constants
 # ---------------------------------------------------------------------------
 _VALID_PROFILES = ("auto", "balanced", "linguistic", "industrial",
-                   "cryptographic", "scientific", "categorical")
+                   "cryptographic", "scientific", "categorical", "hef")
 
 # ---------------------------------------------------------------------------
 # Helper functions for new literal types (module-level, pure Python)
@@ -50,8 +50,8 @@ def _levenshtein(a, b):
         return len(b)
     if not b:
         return len(a)
-    # Short strings: exact Wagner-Fischer DP
-    if len(a) <= 32 and len(b) <= 32:
+    # Exact Wagner-Fischer DP up to 256 chars (covers all practical use cases)
+    if len(a) <= 256 and len(b) <= 256:
         prev = list(range(len(b) + 1))
         for i, ca in enumerate(a):
             curr = [i + 1] + [0] * len(b)
@@ -84,6 +84,20 @@ def _jaccard_bigrams(a, b):
     if not union:
         return 1.0
     return len(sa & sb) / len(union)
+
+
+def _text_score(field, ref):
+    """Subsequence match ratio: fraction of ref's chars found in field in order.
+    O(len(field)), single pass, continuous [0,1]. Combines T's substring logic
+    with N's midpoint thresholding for fuzzy part-number matching."""
+    if not ref:
+        return 0.0
+    j = 0
+    n = len(ref)
+    for c in field:
+        if j < n and c == ref[j]:
+            j += 1
+    return j / n
 
 
 def _common_prefix_len(a, b):
@@ -1167,6 +1181,22 @@ class Snake():
             threshold = (j + 1.0) / 2
             return [index, [tv, threshold], True, "JAC"]
 
+    def _gen_text_similarity(self, index, T, F):
+        """Generate SIM literal — subsequence score with N-style midpoint.
+        T's substring generation + N's continuous thresholding.
+        Ref is picked from T or F, score = subsequence match ratio."""
+        h = self.header[index]
+        tv, fv = str(T[h]), str(F[h])
+        if tv == fv:
+            return None
+        ref = choice([tv, fv])
+        score_t = _text_score(tv, ref)
+        score_f = _text_score(fv, ref)
+        if score_t == score_f:
+            return None
+        threshold = (score_t + score_f) / 2
+        return [index, [ref, threshold], score_t > score_f, "SIM"]
+
     def _gen_text_positional(self, index, T, F):
         """Generate PFX or SFX literal. Returns literal or None."""
         h = self.header[index]
@@ -1576,6 +1606,46 @@ class Snake():
             return self._gen_numeric_midpoint(index, T, F)
         return None
 
+    def _oppose_hef(self, T, F):
+        """SIM-dominant profile for part number matching.
+        Subsequence scoring (SIM) as primary, with TEQ/JAC/PFX/SFX/T support.
+        Designed for short alphanumeric strings (5-30 chars) where
+        customers send variant refs for the same catalog article."""
+        candidates = self._get_differing_candidates(T, F)
+        if not candidates:
+            return None
+        index = self._weighted_feature_choice(candidates)
+        if self.datatypes[index] == "T":
+            r = random()
+            if r < 0.35:
+                lit = self._gen_text_similarity(index, T, F)
+                if lit is not None:
+                    return lit
+            if r < 0.50:
+                lit = self._gen_text_exact(index, T, F)
+                if lit is not None:
+                    return lit
+            if r < 0.65:
+                lit = self._gen_text_positional(index, T, F)
+                if lit is not None:
+                    return lit
+            if r < 0.78:
+                lit = self._gen_text_distance(index, T, F)
+                if lit is not None:
+                    return lit
+            if r < 0.88:
+                lit = self._gen_text_substring(index, T, F)
+                if lit is not None:
+                    return lit
+            if r < 0.95:
+                lit = self._gen_text_charclass(index, T, F)
+                if lit is not None:
+                    return lit
+            return self._gen_text_similarity(index, T, F) or self._gen_text_substring(index, T, F)
+        if self.datatypes[index] == "N":
+            return self._gen_numeric_midpoint(index, T, F)
+        return None
+
     """
     Will return
     - For text fields: words to be or not to be included
@@ -1716,6 +1786,10 @@ class Snake():
             ref, threshold = value[0], value[1]
             j = _jaccard_bigrams(str(field), ref)
             return j >= threshold if negat else j < threshold
+        elif datat == "SIM":
+            ref, threshold = value[0], value[1]
+            s = _text_score(str(field), ref)
+            return s >= threshold if negat else s < threshold
         elif datat == "PFX":
             ref, threshold = value[0], value[1]
             p = _common_prefix_len(str(field), ref)

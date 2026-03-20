@@ -1,0 +1,19 @@
+# HEF Surface Treatment — Part Number Matching Profile (v5.4.4)
+# Short strings (5-30 chars), alphanumeric with dashes/slashes.
+# Customers send variant part refs: S700376REC, SUC-PE01-040044040-02-A
+# HEF catalog uses: ARAA03-700376-A2, ARVE-PE01-040044040-02-A
+#
+# SIM (v5.4.4): subsequence score with N-style midpoint thresholding.
+# Combines T's substring generation with N's continuous logic.
+# _text_score("S700376REC", "700376") = 1.0 at 8x substring cost.
+# Snake's SAT construction finds the right ref + threshold combos.
+#
+# Tested on Pernat (9 articles): "S700376REC" → ARAA03-700376-A2 at 90%.
+# Previously: snake_suggestion at 20% with industrial profile.
+#
+# No LEV — JAC on bigrams (1.24us) replaces LEV (8-40us) for distance.
+# SIM handles the fuzzy matching LEV was doing, at 0.23us.
+
+[profile:hef]
+  text:    SIM:35  TEQ:15  PFX:13  SFX:13  JAC:10  T:8  TDC:4  TN:2
+  numeric: N:5  ND:5  NZ:2
