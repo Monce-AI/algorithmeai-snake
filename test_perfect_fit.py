@@ -1,5 +1,5 @@
 """
-Snake v5.4.3 — Perfect Fit Assessment
+Snake v5.4.4 — Perfect Fit Assessment
 ======================================
 
 Tests that every training datapoint gets P(actual_class) = 1.0.
@@ -124,7 +124,7 @@ def assess(model, data):
             })
 
     print(f"\n{'='*60}")
-    print(f"  PERFECT FIT ASSESSMENT — Snake v5.4.3")
+    print(f"  PERFECT FIT ASSESSMENT — Snake v5.4.4")
     print(f"{'='*60}")
     print(f"  Samples:          {n}")
     print(f"  Correct pred:     {perfect_pred}/{n} ({100*perfect_pred/n:.2f}%)")
