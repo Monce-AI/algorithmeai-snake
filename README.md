@@ -5,14 +5,16 @@
 
 [![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-Proprietary-red.svg?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAxTDMgNXY2YzcgNCA4LjUgOC40IDkgMTIuOEM5LjUgMjAuNCA4IDE2IDggMTFWNmw0LTIuNUwxNiA2djVjMCA1LTEuNSA5LjQtNCAxa)](LICENSE)
-[![Version](https://img.shields.io/badge/v5.4.4-SIM_literal_+_HEF_profile-blueviolet.svg?logo=semanticrelease)](https://github.com/Monce-AI/algorithmeai-snake/releases/tag/v5.4.4)
-[![Build](https://img.shields.io/badge/Build-256_tests_passing-brightgreen.svg?logo=githubactions&logoColor=white)](#testing)
+[![Version](https://img.shields.io/badge/v5.4.6-Distribution_Candles_+_Regression-blueviolet.svg?logo=semanticrelease)](https://github.com/Monce-AI/algorithmeai-snake/releases/tag/v5.4.6)
+[![Build](https://img.shields.io/badge/Build-266_tests_passing-brightgreen.svg?logo=githubactions&logoColor=white)](#testing)
 [![Profiles](https://img.shields.io/badge/Profiles-8_oppose_strategies-orange.svg?logo=probot&logoColor=white)](#oppose-profiles-v520)
 
 [![Production](https://img.shields.io/badge/Production-Live_on_AWS-FF9900.svg?logo=amazonaws&logoColor=white)](https://snake.aws.monce.ai)
 [![API](https://img.shields.io/badge/API-snake.aws.monce.ai-009688.svg?logo=fastapi&logoColor=white)](https://snake.aws.monce.ai/health)
 [![AUROC](https://img.shields.io/badge/AUROC-0.999_Breast_Cancer-brightgreen.svg?logo=target)](#snake-vs-rfgb)
 [![Titanic](https://img.shields.io/badge/Titanic-0.924_AUROC-blue.svg?logo=speedtest)](#snake-vs-rfgb)
+[![Regression](https://img.shields.io/badge/Regression-R²_+7pp_vs_classification-2E7D32.svg?logo=quicklook)](#regression-via-distribution-candles-v546)
+[![Candles](https://img.shields.io/badge/Candles-Distribution_per_Prediction-D32F2F.svg?logo=tradingview&logoColor=white)](#regression-via-distribution-candles-v546)
 
 [![Algorithm](https://img.shields.io/badge/Algorithm-SAT--based_Lookalikes-7B2D8B.svg?logo=probot&logoColor=white)](#what-is-snake)
 [![XAI](https://img.shields.io/badge/XAI-Fully_Explainable-FF6F00.svg?logo=opensourceinitiative&logoColor=white)](#prediction-api)
@@ -43,7 +45,9 @@ Input X  →  Match SAT clauses  →  Find lookalikes  →  Vote  →  Predictio
 > Because: `"petal_length" <= 2.45` AND `"petal_width" <= 0.8`
 > Matched 15 lookalikes, all class `setosa`.
 
-**v5.4.0** adds **Shannon MI-weighted feature selection** and **lookahead literal selection** — the first principled feature importance mechanism in Snake. On 500-feature datasets with 20 informative features, **+12.6pp AUROC** over v5.2.1. Zero regressions on classical datasets.
+**v5.4.6** adds **distribution candles** and **regression** — Snake now does both classification and regression from the same model. Every prediction yields a candle (high/q3/median/q1/low/mean/iqr_mean/std/n) summarising the lookalike distribution; the IQR-trimmed mean is the regression estimate. On a synthetic linear regression (n=800 train), **+7.4pp R²** over `get_prediction` and **2.3× faster** in batch.
+
+**v5.4.0** added **Shannon MI-weighted feature selection** and **lookahead literal selection** — the first principled feature importance mechanism in Snake. On 500-feature datasets with 20 informative features, **+12.6pp AUROC** over v5.2.1. Zero regressions on classical datasets.
 
 ## Install
 
@@ -89,6 +93,84 @@ model.to_json("model.json")
 model = Snake("model.json")       # Auto-detected by .json extension
 print(model.get_prediction(X))    # Same result
 ```
+
+## Regression via Distribution Candles (v5.4.6)
+
+Snake votes by lookalikes. When the target is a class, votes give a probability dict. When the target is a **float**, votes give a **distribution** — and a distribution is exactly what a trader reads off a chart: a high, a low, a body, a wick.
+
+For each prediction, Snake assembles the lookalike y values into a `Candle`:
+
+```
+        ▲ high       ── max(y over lookalikes)
+        │
+        │
+       ╔╧╗ q3        ── 75th percentile
+       ║ ║
+       ║─║ median    ── 50th percentile
+       ║ ║
+       ╚╤╝ q1        ── 25th percentile
+        │
+        │
+        ▼ low        ── min(y over lookalikes)
+```
+
+The candle is a pure-distribution object — there is no order on a set of lookalikes, so OHLC is replaced by a five-number summary plus mean, IQR-trimmed mean, std, and n.
+
+```python
+from algorithmeai import Snake
+
+# Train on a continuous target — y is a float, no binning required.
+data = [{"x1": ..., "x2": ..., "y": 12.34}, ...]
+model = Snake(data, target_index="y", n_layers=20, bucket=80, noise=0.5, workers=4)
+
+# Single-point candle
+c = model.get_candle({"x1": 4.3, "x2": 1.4})
+c.high, c.q3, c.median, c.q1, c.low      # five-number summary
+c.mean, c.iqr_mean, c.std, c.n           # point estimates + dispersion
+c.to_dict()                               # JSON-friendly
+
+# Regression — the IQR-trimmed mean of the lookalike set
+y_hat = model.get_regression({"x1": 4.3, "x2": 1.4})
+
+# Batch (uses the Cython batch lookalike fast-path when available)
+candles = model.get_batch_candles(X_test)
+y_hats  = model.get_batch_regression(X_test)
+```
+
+### Why IQR-trimmed mean
+
+`get_prediction` is mode-like — it picks the most-frequent lookalike value, which is brittle on continuous targets. `iqr_mean` averages the *middle 50%* of the lookalike distribution, discarding the wicks. It's robust like the median and smooth like the mean.
+
+| Method | What it does | R² | Time (200 preds) |
+|--------|--------------|-----|---------------|
+| `get_prediction` (classification path) | most-frequent lookalike y | 0.8734 | 248 ms |
+| `get_regression` / `iqr_mean` | average of lookalikes within [Q1, Q3] | **0.9477** | **106 ms** |
+
+Synthetic regression: `y = 3·x₁ − 2·x₂ + 1.5·x₃ + 𝒩(0, 1)`, n=800 train / 200 test, `Snake(n_layers=20, bucket=80, noise=0.5)`. Batch is faster because all four candle/regression methods share a single Cython lookalike fetch.
+
+### Why the wicks are information
+
+Wide wicks → "model is unsure, downside/upside tail real." Tight body around the median → "high consensus." The candle gives the trader (or risk function) a confidence interval *for free*, on every prediction, without bootstrapping or sampling.
+
+```python
+c = model.get_candle(X)
+range_width = c.high - c.low          # uncertainty proxy
+body_width  = c.q3 - c.q1             # consensus width
+skew        = (c.q3 - c.median) - (c.median - c.q1)  # >0 = upside skew
+```
+
+### API
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `get_candle(X)` | `Candle` | Distribution of lookalike y values |
+| `get_batch_candles(Xs)` | `list[Candle]` | Batched, shares the Cython lookalike path |
+| `get_regression(X)` | `float` | IQR-trimmed mean of the candle |
+| `get_batch_regression(Xs)` | `list[float]` | Batched regression |
+
+`Candle` is a `dataclass` exposing `high, q3, median, q1, low, mean, iqr_mean, std, n` plus `to_dict()`.
+
+The candle path applies to any continuous target — financial returns, lab measurements, sensor readings, latencies, prices. The model is unchanged; only the post-processing of lookalikes differs.
 
 ## MI-Weighted Feature Selection (v5.4.0)
 
@@ -254,6 +336,10 @@ Snake(Knowledge, target_index=0, excluded_features_index=(), n_layers=5, bucket=
 | `get_lookalikes_labeled(X)` | list | `[[index, class, condition, origin], ...]` with `"c"` (core) or `"n"` (noise) |
 | `get_augmented(X)` | dict | Input enriched with Lookalikes, Probability, Prediction, Audit |
 | `get_audit(X)` | str | Full human-readable reasoning trace |
+| `get_candle(X)` | `Candle` | Distribution of lookalike y values — high/q3/median/q1/low/mean/iqr_mean/std/n |
+| `get_batch_candles(Xs)` | `list[Candle]` | Batched candles, shares Cython lookalike fast-path |
+| `get_regression(X)` | `float` | IQR-trimmed mean of the candle (continuous targets) |
+| `get_batch_regression(Xs)` | `list[float]` | Batched regression |
 
 ```python
 X = {"petal_length": 4.3, "petal_width": 1.4}
@@ -636,7 +722,7 @@ Without Cython, Snake runs in pure Python with identical behavior. The Cython ex
 ## Testing
 
 ```bash
-pytest                                # all 256 tests
+pytest                                # all 266 tests
 pytest tests/test_snake.py            # input modes, save/load, augmented, vocal, dedup, parallel training
 pytest tests/test_buckets.py          # bucket chain, noise, routing, audit, dedup
 pytest tests/test_core_algorithm.py   # oppose, construct_clause, construct_sat
@@ -649,11 +735,24 @@ pytest tests/test_stress.py           # stress tests, batch equivalence
 pytest tests/test_ultimate_stress.py  # extended stress tests
 pytest tests/test_oppose_profiles.py  # oppose profiles, new literal types, auto-detection, JSON roundtrip
 pytest tests/test_feature_mi.py       # MI precompute, weighted sampling, lookahead, JSON roundtrip
+pytest tests/test_candle.py           # distribution candles, regression, IQR-trimmed mean
 ```
 
-256 tests across 12 files. Tests use `tests/fixtures/sample.csv` (15 rows, 3 classes) with small `n_layers` (1–3) and `bucket` (3–5) for speed.
+266 tests across 13 files. Tests use `tests/fixtures/sample.csv` (15 rows, 3 classes) with small `n_layers` (1–3) and `bucket` (3–5) for speed.
 
 ## Changelog
+
+### v5.4.6 (May 2026)
+
+- **Distribution candles**: `get_candle(X)` and `get_batch_candles(Xs)` return a `Candle` dataclass summarising the lookalike y values — `high, q3, median, q1, low, mean, iqr_mean, std, n` plus `to_dict()`. Pure-distribution object: no temporal order, so OHLC is replaced with quartiles.
+- **Regression**: `get_regression(X)` and `get_batch_regression(Xs)` return floats — the IQR-trimmed mean of the lookalike distribution. On a synthetic linear regression (`y = 3·x₁ − 2·x₂ + 1.5·x₃ + 𝒩(0,1)`, n=800 train), R² = **0.9477** vs `get_prediction` R² = 0.8734 (**+7.4pp**) at **2.3× the throughput** (batch shares the Cython lookalike fast path).
+- **No new params**: works on any `Snake` model trained with continuous targets. The model is unchanged; only post-processing of the lookalike set is new.
+- **10 new tests** in `tests/test_candle.py` (266 tests total)
+- **New exports**: `Candle`, `compute_candle` from `algorithmeai`
+
+### v5.4.5 (Mar 2026)
+
+- **Enforced datatypes parameter**: optional `enforced_datatypes` constructor argument lets callers pin the target/feature types instead of relying on auto-detection. Useful when training data is too small to disambiguate `T` (text) from `N` (numeric) and the caller knows the intent.
 
 ### v5.4.4 (Mar 2026)
 

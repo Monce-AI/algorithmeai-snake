@@ -16,11 +16,13 @@ try:
 except ImportError:
     _HAS_ACCEL = False
 
+from .candle import Candle, compute_candle
+
 ################################################################
 #                                                              #
 #    Algorithme.ai : Snake         Author : Charles Dana       #
 #                                                              #
-#    v5.4.4 — SAT-ensembled bucketed multiclass classifier     #
+#    v5.4.6 — SAT-ensembled bucketed multiclass classifier     #
 #                                                              #
 ################################################################
 
@@ -28,7 +30,7 @@ _BANNER = """################################################################
 #                                                              #
 #    Algorithme.ai : Snake         Author : Charles Dana       #
 #                                                              #
-#    v5.4.4 — SAT-ensembled bucketed multiclass classifier     #
+#    v5.4.6 — SAT-ensembled bucketed multiclass classifier     #
 #                                                              #
 ################################################################
 """
@@ -307,7 +309,8 @@ Snake() of data will provide insights
 class Snake():
     def __init__(self, Knowledge, target_index=0, excluded_features_index=(),
                  n_layers=5, bucket=250, noise=0.25, vocal=False, saved=False,
-                 progress_file=None, workers=1, oppose_profile="auto", lookahead=5):
+                 progress_file=None, workers=1, oppose_profile="auto", lookahead=5,
+                 datatypes=None):
         # --- logging setup ---
         global _snake_instance_counter
         _snake_instance_counter += 1
@@ -360,6 +363,7 @@ class Snake():
         self._col_stats = {}
         self._feature_mi = {}
         self.lookahead = lookahead
+        self._enforced_datatypes = datatypes  # if set, skip type detection
         self._t0 = 0
         self._avg_per_layer = 0
         self._current_layer = 0
@@ -433,26 +437,39 @@ class Snake():
 
         targets = [row[ti] for row in rows]
         self.datatypes = []
-        # Check for complex (dict/list) targets before stringifying
-        has_complex = any(isinstance(t, (dict, list)) for t in targets)
-        if has_complex:
-            self._detect_target_type(targets, raw=True)
+        if self._enforced_datatypes and len(self._enforced_datatypes) > 0:
+            # Use enforced target type
+            self.datatypes = [self._enforced_datatypes[0]]
+            self.qprint(f"# Target type: {self.datatypes[0]} (enforced)")
         else:
-            self._detect_target_type([str(t) for t in targets])
-
-        # Detect feature types
-        header_index = [ti] + [i for i in range(len(header)) if i != ti]
-        for t in range(1, len(self.header)):
-            hi = header_index[t]
-            values = [str(row[hi]) for row in rows]
-            universe = set("".join(values))
-            if [c for c in universe if not c in "+-.0123456789e"] == []:
-                dtt = "N"
+            # Check for complex (dict/list) targets before stringifying
+            has_complex = any(isinstance(t, (dict, list)) for t in targets)
+            if has_complex:
+                self._detect_target_type(targets, raw=True)
             else:
-                dtt = "T"
-            self.qprint(f"#\t[{self.header[t]}] {'numeric' if dtt == 'N' else 'text'} field")
-            self.datatypes += [dtt]
-        self.qprint(f"# Analysis datatypes {self.datatypes}")
+                self._detect_target_type([str(t) for t in targets])
+
+        # Detect feature types (or use enforced datatypes)
+        header_index = [ti] + [i for i in range(len(header)) if i != ti]
+        if self._enforced_datatypes and len(self._enforced_datatypes) >= len(self.header):
+            # Use enforced datatypes — skip detection entirely
+            for t in range(1, len(self.header)):
+                dtt = self._enforced_datatypes[t]
+                self.qprint(f"#\t[{self.header[t]}] {'numeric' if dtt == 'N' else 'text'} field (enforced)")
+                self.datatypes += [dtt]
+            self.qprint(f"# Analysis datatypes {self.datatypes} (enforced)")
+        else:
+            for t in range(1, len(self.header)):
+                hi = header_index[t]
+                values = [str(row[hi]) for row in rows]
+                universe = set("".join(values))
+                if [c for c in universe if not c in "+-.0123456789e"] == []:
+                    dtt = "N"
+                else:
+                    dtt = "T"
+                self.qprint(f"#\t[{self.header[t]}] {'numeric' if dtt == 'N' else 'text'} field")
+                self.datatypes += [dtt]
+            self.qprint(f"# Analysis datatypes {self.datatypes}")
 
         # Build population dicts
         pp = []
@@ -2214,6 +2231,45 @@ class Snake():
         return Y
 
     """
+    Distribution candle of the lookalike y values for a single datapoint.
+    Returns a Candle (high/q3/median/q1/low/mean/std/n). Intended for
+    regression-style continuous targets — falls back gracefully on classes
+    that are numerically coercible, returns NaNs + n=0 otherwise.
+    """
+    def get_candle(self, X):
+        lookalikes = self.get_lookalikes(X)
+        return compute_candle([la[1] for la in lookalikes])
+
+    """
+    Batch candles for a list of datapoints. Mirrors get_batch_prediction's
+    routing path so amortized Cython lookups are reused when available.
+    """
+    def get_batch_candles(self, Xs):
+        if _HAS_ACCEL:
+            all_lookalikes = batch_get_lookalikes_fast(
+                self.layers, Xs, self.header, self.targets
+            )
+            return [compute_candle([la[1] for la in lks]) for lks in all_lookalikes]
+        return [self.get_candle(X) for X in Xs]
+
+    """
+    Regression prediction for a continuous (float) target. Returns the
+    IQR-trimmed mean of the lookalike distribution — the robust point
+    estimate from the candle. Use this instead of get_prediction when y
+    is continuous: get_prediction picks a single lookalike y (mode-like),
+    while get_regression averages the consensus middle of the distribution.
+    """
+    def get_regression(self, X):
+        return self.get_candle(X).iqr_mean
+
+    """
+    Batch regression: list of float predictions, sharing the Cython
+    lookalike fast path with get_batch_candles.
+    """
+    def get_batch_regression(self, Xs):
+        return [c.iqr_mean for c in self.get_batch_candles(Xs)]
+
+    """
     Batch prediction for a list of datapoints.
     Returns list of {"prediction": ..., "probability": ..., "confidence": ...} dicts.
     Delegates to Cython batch_predict_fast when available for maximum throughput.
@@ -2545,7 +2601,7 @@ class Snake():
 
     def to_json(self, fout="snakeclassifier.json"):
         snake_classifier = {
-            "version": "5.4.4",
+            "version": "5.4.6",
             "population": self.population,
             "header": self.header,
             "target": self.target,
