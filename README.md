@@ -33,6 +33,23 @@
 
 SAT-based explainable multiclass classifier. Zero dependencies. Pure Python.
 
+> ## 🐍 New in v5.4.7 — `get_synthetic`: audit a whole dataset, not just one prediction
+>
+> Snake already explains *every* prediction. **v5.4.7 explains the whole dataset** — and tells you, honestly, when there's nothing to explain.
+>
+> ```python
+> out = model.get_synthetic(test)          # scan a batch — 0 tokens, sub-ms/point
+> out["resultat"]
+> # "The bet held: 82.1% correct (AUROC 0.856), strongest clue = subtype —
+> #  though it's a touch over-optimistic, so trust accuracy over confidence."
+> ```
+>
+> - **Honest by construction** — a permutation-free significance test (χ² on debiased mutual information) flags `is_noise=true` on random data and `strong` on real signal. *Same pipeline, opposite verdicts.* Snake never manufactures signal from noise.
+> - **Calibration in the open** — reports the predicted rate vs the **true base rate**, so over-optimism is surfaced, not hidden.
+> - **Local-first, zero-dependency** — the full deterministic summary runs offline (`interpret=False`). The plain-language *hypothesis / experiment / result* narration is one optional cloud call via the [monceai SDK](https://github.com/Monce-AI/monceai-sdk), imported lazily.
+>
+> → [Full section below](#synthetic-audit-at-scale-v547)
+
 ## What Is Snake
 
 Snake is a **SAT-based lookalike voting classifier**. For each prediction, it finds training samples that "look alike" via Boolean clause matching, then votes by their labels. The result: a fully explainable classifier where every prediction comes with a human-readable audit trail.
@@ -44,6 +61,8 @@ Input X  →  Match SAT clauses  →  Find lookalikes  →  Vote  →  Predictio
 > **Predicted outcome:** `setosa` (93.3%)
 > Because: `"petal_length" <= 2.45` AND `"petal_width" <= 0.8`
 > Matched 15 lookalikes, all class `setosa`.
+
+**v5.4.7** adds **`get_synthetic`** — a synthetic audit at *dataset* scale. Snake scans a batch of points locally (0 tokens, sub-ms each) and reports deterministic diagnostics: prediction spread, calibration vs the true base rate, debiased feature mutual-information, and a **label-free noise detector** that tells you honestly when your data looks like random luck. An optional one-call cloud narration (via the [monceai SDK](https://github.com/Monce-AI/monceai-sdk)) explains the finding as a tiny science experiment — *hypothesis / experiment / result*. The local path stays zero-dependency; the cloud voice is imported lazily.
 
 **v5.4.6** adds **distribution candles** and **regression** — Snake now does both classification and regression from the same model. Every prediction yields a candle (high/q3/median/q1/low/mean/iqr_mean/std/n) summarising the lookalike distribution; the IQR-trimmed mean is the regression estimate. On a synthetic linear regression (n=800 train), **+7.4pp R²** over `get_prediction` and **2.3× faster** in batch.
 
@@ -340,6 +359,7 @@ Snake(Knowledge, target_index=0, excluded_features_index=(), n_layers=5, bucket=
 | `get_batch_candles(Xs)` | `list[Candle]` | Batched candles, shares Cython lookalike fast-path |
 | `get_regression(X)` | `float` | IQR-trimmed mean of the candle (continuous targets) |
 | `get_batch_regression(Xs)` | `list[float]` | Batched regression |
+| `get_synthetic(Xs, interpret=True)` | dict | Dataset-scale synthetic audit (v5.4.7) — deterministic summary + optional cloud narration |
 
 ```python
 X = {"petal_length": 4.3, "petal_width": 1.4}
@@ -383,6 +403,69 @@ model.get_augmented(X)     # {**X, "Lookalikes": ..., "Probability": ..., "Predi
   >> PREDICTION: versicolor
 ### END AUDIT ###
 ```
+
+## Synthetic Audit at Scale (v5.4.7)
+
+`get_audit(X)` explains **one** prediction. `get_synthetic(Xs)` explains a **whole dataset**: it scans a batch, aggregates deterministic diagnostics locally (0 tokens, sub-ms per point), and — optionally — makes a single cloud call to narrate the finding in plain language.
+
+The design has two layers, and the split is deliberate:
+
+- **Local core (`interpret=False`)** — 100% standard library, zero network, zero tokens. This is what the public free tier always gets.
+- **Cloud voice (`interpret=True`, default)** — one call to the [monceai SDK](https://github.com/Monce-AI/monceai-sdk) `Json`, imported **lazily** so Snake stays zero-dependency. `monceai` depends on `algorithmeai`, never the reverse — no circular dependency.
+
+```python
+model = Snake(train, target_index="sensitive", n_layers=20, bucket=200, oppose_profile="industrial")
+
+# Pure local — deterministic, offline, free. Pass labeled rows to also get held-out metrics.
+summary = model.get_synthetic(test, interpret=False)["summary"]
+```
+```python
+{
+  "n_points": 95, "n_classes": 2, "task": "binary", "n_layers": 20,
+  "prediction_distribution_pct": {"0": 57.9, "1": 42.1},
+  "true_base_rate_pct":          {"0": 50.4, "1": 49.6},
+  "calibration_gap_pts": 7.5,            # predicted vs true majority rate
+  "mean_confidence": 0.881,
+  "low_confidence_rate_pct": 11.6,
+  "coverage_rate_pct": 100.0,            # share of points a bucket actually matched
+  "top_features_mi": [["subtype", 0.61], ["hotspot_mutations", 0.60], ...],
+  "signal_strength": "strong",           # none / weak / moderate / strong
+  "is_noise": false,                     # honest: true when data looks like chance
+  "n_labeled": 95,
+  "holdout_accuracy_pct": 82.1,          # only when X carries the target column
+  "holdout_auroc": 0.856                 # no retrain — uses the labels you passed
+}
+```
+
+```python
+# With the cloud voice — one Json call narrates it as a science experiment.
+out = model.get_synthetic(test)
+print(out["hypothese"])    # "We bet the genetic clues could sort cell lines into responders vs not."
+print(out["experience"])   # "Snake ran a 20-layer logic check over all 95 points, spending zero AI tokens."
+print(out["resultat"])     # "The bet held: 82.1% correct (AUROC 0.856), strongest clue = subtype —
+                           #  though it's a touch over-optimistic, so trust accuracy over confidence."
+```
+
+If `monceai` is not installed, `interpret=True` raises a clear error pointing at the install **and** the `interpret=False` escape hatch — never a bare `ImportError`.
+
+### The honest noise detector
+
+The headline property: **Snake refuses to manufacture signal from noise.** Two safeguards back the `is_noise` flag:
+
+- **Effect size** — mutual information per feature, **Miller-Madow bias-corrected**. On finite data, an unrelated feature still shows MI > 0 because empty (feature, class) cells never appear; we subtract the analytic null `(bins−1)(classes−1)/(2n·ln2)`.
+- **Significance** — under independence, `2n·MI·ln2 ∼ χ²` with `df = (bins−1)(classes−1)`. `is_noise` fires only when **no** feature clears ≈3σ above its null. This is a permutation-free significance test, not a tuned threshold.
+
+| Data | `signal_strength` | `is_noise` | held-out AUROC |
+|------|-------------------|-----------|----------------|
+| Random labels (coin-flip) | `none` | `true` | ≈ 0.50 |
+| Real signal `σ(1.8a − 1.3b)` | `strong` | `false` | 0.84 |
+
+Same pipeline, opposite verdicts — exactly what you want from an explainable classifier: silent when there's nothing, confident when there is.
+
+### Inputs & returns
+
+- `Xs` — a list of dicts (a lone dict is treated as a batch of one). Include the target column to receive held-out `accuracy`/`AUROC`; omit it for an unlabeled scan (everything except those two fields still works).
+- Returns `{"summary": {...}}`, plus `"hypothese"`/`"experience"`/`"resultat"` when `interpret=True`.
 
 ## Lookalike Origins — Core vs Noise (v5.0.0)
 

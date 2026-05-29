@@ -22,7 +22,7 @@ from .candle import Candle, compute_candle
 #                                                              #
 #    Algorithme.ai : Snake         Author : Charles Dana       #
 #                                                              #
-#    v5.4.6 — SAT-ensembled bucketed multiclass classifier     #
+#    v5.4.7 — SAT-ensembled bucketed multiclass classifier     #
 #                                                              #
 ################################################################
 
@@ -30,7 +30,7 @@ _BANNER = """################################################################
 #                                                              #
 #    Algorithme.ai : Snake         Author : Charles Dana       #
 #                                                              #
-#    v5.4.6 — SAT-ensembled bucketed multiclass classifier     #
+#    v5.4.7 — SAT-ensembled bucketed multiclass classifier     #
 #                                                              #
 ################################################################
 """
@@ -362,6 +362,7 @@ class Snake():
         self.oppose_profile = oppose_profile
         self._col_stats = {}
         self._feature_mi = {}
+        self._feature_bins = {}     # occupied-bin count per feature (for MI bias correction)
         self.lookahead = lookahead
         self._enforced_datatypes = datatypes  # if set, skip type detection
         self._t0 = 0
@@ -1093,6 +1094,7 @@ class Snake():
                 if p_joint > 0 and p_feat > 0 and p_target > 0:
                     mi += p_joint * math.log2(p_joint / (p_feat * p_target))
             self._feature_mi[col] = max(mi, 0.0)
+            self._feature_bins[col] = len(feat_counts)
         if self._feature_mi:
             sorted_mi = sorted(self._feature_mi.items(), key=lambda x: -x[1])
             top5 = [(self.header[col], f"{mi:.4f}") for col, mi in sorted_mi[:5]]
@@ -2596,12 +2598,231 @@ class Snake():
         return audit
 
     # ------------------------------------------------------------------
+    # Synthetic audit (v5.4.7) — local-compute scan + optional cloud voice
+    # ------------------------------------------------------------------
+
+    def _synthetic_auroc(self, scores, labels):
+        """Rank-based (Mann-Whitney) AUROC for binary labels in {0,1}. Pure
+        Python, tie-averaged. Returns None if a class is absent."""
+        pos = sum(labels)
+        neg = len(labels) - pos
+        if pos == 0 or neg == 0:
+            return None
+        order = sorted(range(len(scores)), key=lambda k: scores[k])
+        rsum = 0.0
+        j = 0
+        rank = 1
+        while j < len(order):
+            k = j
+            while k < len(order) and scores[order[k]] == scores[order[j]]:
+                k += 1
+            avg = (rank + rank + (k - j) - 1) / 2.0
+            for t in range(j, k):
+                if labels[order[t]] == 1:
+                    rsum += avg
+            rank += (k - j)
+            j = k
+        return (rsum - pos * (pos + 1) / 2.0) / (pos * neg)
+
+    def _synthetic_summary(self, Xs):
+        """Deterministic, 0-token scan over a batch of datapoints. Returns the
+        summary dict that get_synthetic interprets. 100% local compute."""
+        if isinstance(Xs, dict):
+            Xs = [Xs]
+        n = len(Xs)
+        target_key = self.header[0]
+        uniq = self._sorted_unique_targets()
+        k = max(len(uniq), 1)
+        uniform = 1.0 / k
+
+        # --- batch scan: predictions + confidence + coverage (fast path) ---
+        feats = [{kk: vv for kk, vv in X.items() if kk != target_key} for X in Xs]
+        batch = self.get_batch_prediction(feats) if feats else []
+        pred_counts = {}
+        conf_sum = 0.0
+        low_conf = 0
+        covered = 0
+        low_thresh = (uniform + 1.0) / 2.0
+        for r in batch:
+            pk = self._target_key(r["prediction"])
+            pred_counts[pk] = pred_counts.get(pk, 0) + 1
+            c = r["confidence"]
+            conf_sum += c
+            if c < low_thresh:
+                low_conf += 1
+            if c > uniform + 1e-9:        # not the flat prior => a bucket matched
+                covered += 1
+
+        # --- true base rate from training targets ---
+        base = {}
+        for t in self.targets:
+            tk = self._target_key(t)
+            base[tk] = base.get(tk, 0) + 1
+        ntr = max(len(self.targets), 1)
+        base_rate = {kk: round(100 * v / ntr, 1) for kk, v in base.items()}
+        pred_rate = {kk: round(100 * v / max(n, 1), 1) for kk, v in pred_counts.items()}
+        # calibration gap on the training-majority class
+        maj = max(base, key=base.get) if base else None
+        calib_gap = None
+        if maj is not None:
+            calib_gap = round(pred_rate.get(maj, 0.0) - base_rate.get(maj, 0.0), 1)
+
+        # --- feature MI (already computed at train time) + noise detector ---
+        if not self._feature_mi:
+            try:
+                self._precompute_feature_mi()
+            except Exception:
+                self._feature_mi = {}
+        # target entropy H(target) in bits — to normalise MI (base-rate robust)
+        h_target = 0.0
+        for v in base.values():
+            p = v / ntr
+            if p > 0:
+                h_target -= p * math.log2(p)
+        # A feature with NO real link to the target still shows MI > 0 on finite
+        # data, purely because empty (feature, class) cells never appear. We
+        # separate real signal from this finite-sample illusion two ways:
+        #   - effect size:   debiased MI (Miller-Madow) / H(target), n-robust
+        #   - significance:  z-score of raw MI vs its analytic null. Under
+        #                    independence 2n.MI.ln2 ~ chi2 with df=(bins-1)(k-1),
+        #                    so null mean = df/(2n.ln2), null var = 2.df/(2n.ln2)^2.
+        # is_noise fires when NO feature clears ~3 sigma (significant by chance,
+        # max taken over all features). This is the honest is_noise flag.
+        k_t = max(len(base), 1)
+        ln2 = math.log(2)
+        debiased = {}
+        max_z = 0.0
+        for c, v in self._feature_mi.items():
+            bins = self._feature_bins.get(c, 2)
+            df = max((bins - 1) * (k_t - 1), 1)
+            if ntr > 0:
+                null_mean = df / (2 * ntr * ln2)
+                null_std = math.sqrt(2 * df) / (2 * ntr * ln2)
+            else:
+                null_mean = null_std = 0.0
+            debiased[c] = max(v - null_mean, 0.0)
+            if null_std > 1e-12:
+                max_z = max(max_z, (v - null_mean) / null_std)
+        mi_named = sorted(
+            ((self.header[c], debiased.get(c, 0.0)) for c in self._feature_mi),
+            key=lambda x: -x[1],
+        )
+        max_mi = mi_named[0][1] if mi_named else 0.0
+        norm_mi = (max_mi / h_target) if h_target > 1e-9 else 0.0
+        if max_z < 3.0:                       # not significant -> looks like chance
+            strength, noise = "none", True
+        elif norm_mi < 0.08:
+            strength, noise = "weak", False
+        elif norm_mi < 0.20:
+            strength, noise = "moderate", False
+        else:
+            strength, noise = "strong", False
+
+        # --- held-out metrics IF the caller passed labels (no retrain) ---
+        labeled = [(X, X[target_key]) for X in Xs if target_key in X]
+        acc = auroc = None
+        n_labeled = len(labeled)
+        if n_labeled:
+            correct = 0
+            scores = []
+            bin_labels = []
+            pos_class = uniq[-1] if uniq else None     # 1 > 0, True > False
+            pos_key = self._target_key(pos_class)
+            for X, y in labeled:
+                Xf = {kk: vv for kk, vv in X.items() if kk != target_key}
+                prob = self.get_probability(Xf)
+                pred = self.get_prediction(Xf)
+                if self._target_key(pred) == self._target_key(y):
+                    correct += 1
+                if k == 2:
+                    scores.append(prob.get(pos_class, prob.get(pos_key, 0.0)))
+                    bin_labels.append(1 if self._target_key(y) == pos_key else 0)
+            acc = round(100 * correct / n_labeled, 1)
+            if k == 2:
+                a = self._synthetic_auroc(scores, bin_labels)
+                auroc = round(a, 3) if a is not None else None
+
+        return {
+            "n_points": n,
+            "n_classes": k,
+            "task": "binary" if k == 2 else ("multiclass" if k > 2 else "single"),
+            "n_layers": len(self.layers),
+            "prediction_distribution_pct": pred_rate,
+            "true_base_rate_pct": base_rate,
+            "calibration_gap_pts": calib_gap,
+            "mean_confidence": round(conf_sum / n, 3) if n else None,
+            "low_confidence_rate_pct": round(100 * low_conf / n, 1) if n else None,
+            "coverage_rate_pct": round(100 * covered / n, 1) if n else None,
+            "top_features_mi": [(nm, round(v, 4)) for nm, v in mi_named[:6]],
+            "target_entropy_bits": round(h_target, 3),
+            "signal_strength": strength,
+            "is_noise": noise,
+            "n_labeled": n_labeled,
+            "holdout_accuracy_pct": acc,
+            "holdout_auroc": auroc,
+        }
+
+    def get_synthetic(self, Xs, interpret=True):
+        """Synthetic audit at dataset scale (v5.4.7).
+
+        Snake scans a *batch* of datapoints locally (0 tokens, sub-ms each),
+        aggregates deterministic diagnostics — prediction spread, calibration
+        vs the true base rate, feature mutual-information, a label-free noise
+        detector, and held-out accuracy/AUROC when labels are supplied — then
+        (optionally) makes ONE cloud call via the monceai SDK to narrate the
+        finding as a tiny scientific experiment: hypothesis / experiment /
+        result, explained plainly.
+
+        Local compute is always available (interpret=False returns just the
+        deterministic summary). The cloud voice is the only part that needs
+        monceai — imported lazily so algorithmeai stays zero-dependency.
+
+        Returns a dict: {"summary": <deterministic dict>, and when
+        interpret=True also "hypothese"/"experience"/"resultat"}.
+        """
+        summary = self._synthetic_summary(Xs)
+        result = {"summary": summary}
+        if not interpret:
+            return result
+
+        try:
+            from monceai import Json
+        except ImportError:
+            raise RuntimeError(
+                "get_synthetic(interpret=True) needs the monceai SDK for the "
+                "cloud narration step:\n"
+                "    pip install git+https://github.com/Monce-AI/monceai-sdk.git\n"
+                "For pure-local compute (0 tokens, no cloud), call "
+                "get_synthetic(Xs, interpret=False) and read result['summary']."
+            )
+
+        prompt = (
+            "You are explaining a machine-learning result to a smart 13-year-old, "
+            "as if it were a small science experiment. Be warm and concrete, no jargon. "
+            "Below is the deterministic output of a SAT-based classifier (Snake) that "
+            "scanned a batch of data points. Return STRICT JSON with exactly three keys:\n"
+            '  "hypothese"  — one sentence: what we bet the data could tell us.\n'
+            '  "experience" — one sentence: what Snake actually did to test it '
+            "(mention how many points, and that it costs no AI tokens).\n"
+            '  "resultat"   — one sentence: what we found, using the real numbers, '
+            "and whether the bet held up.\n"
+            "Ground every claim in the numbers. If is_noise is true, say honestly the "
+            "data looks like random luck. If calibration_gap_pts is large, mention the "
+            "model is a bit over-optimistic. Never invent a number that is not below.\n\n"
+            "DATA:\n" + json.dumps(summary, ensure_ascii=False)
+        )
+        narration = dict(Json(prompt))
+        for key in ("hypothese", "experience", "resultat"):
+            result[key] = narration.get(key, "")
+        return result
+
+    # ------------------------------------------------------------------
     # Serialization
     # ------------------------------------------------------------------
 
     def to_json(self, fout="snakeclassifier.json"):
         snake_classifier = {
-            "version": "5.4.6",
+            "version": "5.4.7",
             "population": self.population,
             "header": self.header,
             "target": self.target,
