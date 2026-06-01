@@ -22,7 +22,7 @@ from .candle import Candle, compute_candle
 #                                                              #
 #    Algorithme.ai : Snake         Author : Charles Dana       #
 #                                                              #
-#    v5.4.7 — SAT-ensembled bucketed multiclass classifier     #
+#    v5.4.8 — SAT-ensembled bucketed multiclass classifier     #
 #                                                              #
 ################################################################
 
@@ -30,7 +30,7 @@ _BANNER = """################################################################
 #                                                              #
 #    Algorithme.ai : Snake         Author : Charles Dana       #
 #                                                              #
-#    v5.4.7 — SAT-ensembled bucketed multiclass classifier     #
+#    v5.4.8 — SAT-ensembled bucketed multiclass classifier     #
 #                                                              #
 ################################################################
 """
@@ -368,6 +368,10 @@ class Snake():
         self._t0 = 0
         self._avg_per_layer = 0
         self._current_layer = 0
+        # --- v5.4.8: stripped serialization + parallel batch inference ---
+        self._stripped = False            # True only when loaded from a stripped JSON (no population)
+        self._parallel_threshold = 64     # batches smaller than this run inline (IPC not worth it)
+        self._max_workers = None          # None => os.cpu_count(); cap the inference pool size
 
         # Detect input type and dispatch
         if isinstance(Knowledge, str) and Knowledge.endswith(".json"):
@@ -2141,7 +2145,85 @@ class Snake():
                     out[h] = X[h]
         return out
 
+    # ------------------------------------------------------------------
+    # v5.4.8 — population guard + parallel batch inference
+    # ------------------------------------------------------------------
+
+    def _require_population(self, method):
+        """Raise a clear error when a population-dependent method is called on a
+        stripped model (loaded from to_json(stripped=True))."""
+        if self._stripped or not self.population:
+            raise RuntimeError(
+                f"{method}() needs the training population, but this model was "
+                "loaded stripped (no population). Stripped models serve the hot "
+                "path (prediction / probability / lookalikes / candle / "
+                "regression) only. Re-save with to_json(stripped=False) and "
+                "load the full model to use audit / augmented."
+            )
+
+    def _infer_pool_size(self, n_items):
+        """Proportionate worker count: one chunk per worker, never more workers
+        than items, capped by available CPU (or self._max_workers)."""
+        import os
+        cap = self._max_workers or os.cpu_count() or 1
+        return max(1, min(cap, n_items))
+
+    def _parallel_infer(self, method_name, Xs):
+        """Run a single-dict inference method over a list of datapoints, dividing
+        the work across a proportionate number of CPU processes.
+
+        Order-preserving and EXACT: each datapoint is scored independently by the
+        same single-dict method, so the parallel result is element-for-element
+        identical to [getattr(self, method_name)(X) for X in Xs]. Pure-Python
+        inference is GIL-bound, so we fork processes (not threads) to use every
+        core. Small batches and single-worker cases run inline — IPC isn't worth
+        it below self._parallel_threshold.
+        """
+        if not isinstance(Xs, list):
+            raise TypeError("_parallel_infer expects a list of datapoints")
+        if len(Xs) == 0:
+            return []
+
+        n_workers = self._infer_pool_size(len(Xs))
+        if n_workers == 1 or len(Xs) < self._parallel_threshold:
+            method = getattr(self, method_name)
+            return [method(X) for X in Xs]
+
+        # Balanced contiguous chunks — one per worker, order preserved on merge.
+        k, r = divmod(len(Xs), n_workers)
+        chunks, start = [], 0
+        for w in range(n_workers):
+            size = k + (1 if w < r else 0)
+            if size:
+                chunks.append((start, Xs[start:start + size]))
+                start += size
+
+        import multiprocessing
+        if "fork" not in multiprocessing.get_all_start_methods():
+            # Platform without fork (e.g. Windows): fall back to inline.
+            method = getattr(self, method_name)
+            return [method(X) for X in Xs]
+        ctx = multiprocessing.get_context("fork")
+
+        # Share the model with workers via fork-inherited COW, NOT pickling.
+        # Setting the module global before Pool() means each forked child sees
+        # this exact model in its address space at no copy cost — the whole
+        # point of stripping the population: the model is small and shared.
+        global _infer_model
+        _infer_model = self
+        try:
+            results = [None] * len(Xs)
+            jobs = [(method_name, start, chunk) for (start, chunk) in chunks]
+            with ctx.Pool(n_workers) as pool:
+                for start, chunk_out in pool.imap_unordered(_infer_chunk_worker, jobs):
+                    results[start:start + len(chunk_out)] = chunk_out
+        finally:
+            _infer_model = None
+        return results
+
     def get_lookalikes(self, X):
+        if isinstance(X, list):
+            return self._parallel_infer("get_lookalikes", X)
         X = self._normalize_features(X)
         if _HAS_ACCEL:
             return get_lookalikes_fast(self.layers, X, self.header, self.targets)
@@ -2162,6 +2244,8 @@ class Snake():
     def get_lookalikes_labeled(self, X):
         """Like get_lookalikes but each entry includes origin: 'c' (core) or 'n' (noise).
         Returns list of [global_idx, target_value, condition, origin]."""
+        if isinstance(X, list):
+            return self._parallel_infer("get_lookalikes_labeled", X)
         X = self._normalize_features(X)
         all_lookalikes = []
         for layer in self.layers:
@@ -2206,6 +2290,8 @@ class Snake():
     Gives the probability vector associated
     """
     def get_probability(self, X):
+        if isinstance(X, list):
+            return self._parallel_infer("get_probability", X)
         lookalikes = self.get_lookalikes(X)
         return self._prob_to_dict(self._get_probability_from_lookalikes(lookalikes))
 
@@ -2213,6 +2299,8 @@ class Snake():
     Predicts the outcome for a datapoint
     """
     def get_prediction(self, X):
+        if isinstance(X, list):
+            return self._parallel_infer("get_prediction", X)
         lookalikes = self.get_lookalikes(X)
         prob_tuples = self._get_probability_from_lookalikes(lookalikes)
         return self._prediction_from_prob(prob_tuples)
@@ -2221,6 +2309,9 @@ class Snake():
     Augments a datapoint with every available information
     """
     def get_augmented(self, X):
+        if isinstance(X, list):
+            return self._parallel_infer("get_augmented", X)
+        self._require_population("get_augmented")
         Y = X.copy()
         lookalikes = self.get_lookalikes(X)
         prob_tuples = self._get_probability_from_lookalikes(lookalikes)
@@ -2239,6 +2330,8 @@ class Snake():
     that are numerically coercible, returns NaNs + n=0 otherwise.
     """
     def get_candle(self, X):
+        if isinstance(X, list):
+            return self._parallel_infer("get_candle", X)
         lookalikes = self.get_lookalikes(X)
         return compute_candle([la[1] for la in lookalikes])
 
@@ -2262,6 +2355,8 @@ class Snake():
     while get_regression averages the consensus middle of the distribution.
     """
     def get_regression(self, X):
+        if isinstance(X, list):
+            return self._parallel_infer("get_regression", X)
         return self.get_candle(X).iqr_mean
 
     """
@@ -2466,6 +2561,9 @@ class Snake():
     R.A.G.
     """
     def get_audit(self, X):
+        if isinstance(X, list):
+            return self._parallel_infer("get_audit", X)
+        self._require_population("get_audit")
         lookalikes = self.get_lookalikes(X)
         prob_tuples = self._get_probability_from_lookalikes(lookalikes)
         probability = self._prob_to_dict(prob_tuples)
@@ -2820,10 +2918,22 @@ class Snake():
     # Serialization
     # ------------------------------------------------------------------
 
-    def to_json(self, fout="snakeclassifier.json"):
+    def to_json(self, fout="snakeclassifier.json", stripped=False):
+        """Serialize the model to JSON.
+
+        stripped=True drops the training `population` (typically ~95% of the
+        bytes) and writes only what inference needs: layers, targets, header,
+        datatypes, config. A stripped model serves the hot path
+        (prediction / probability / lookalikes / candle / regression) at a
+        fraction of the RAM, so many workers can each hold a full copy — the
+        v5.4.8 worker-pool lever. Population-dependent methods (get_audit,
+        get_augmented, get_lookalikes_labeled's sample labels) raise a clear
+        error on a stripped model. Save a full model too if you need those.
+        """
         snake_classifier = {
-            "version": "5.4.7",
-            "population": self.population,
+            "version": "5.4.8",
+            "stripped": bool(stripped),
+            "population": [] if stripped else self.population,
             "header": self.header,
             "target": self.target,
             "targets": self.targets,
@@ -2842,12 +2952,17 @@ class Snake():
         }
         with open(fout, "w") as f:
             f.write(json.dumps(snake_classifier, indent=2))
-        self.qprint(f"Safely saved to {fout}")
+        kind = "stripped" if stripped else "full"
+        self.qprint(f"Safely saved to {fout} ({kind})")
 
     def from_json(self, filepath="snakeclassifier.json"):
         with open(filepath, "r") as f:
             loaded_module = json.load(f)
-        self.population = loaded_module["population"]
+        self.population = loaded_module.get("population", [])
+        # v5.4.8: a stripped model carries no population. Flag it so the
+        # population-dependent methods can raise a clear error rather than
+        # an opaque IndexError, and so the parallel pool knows it's cheap to fork.
+        self._stripped = bool(loaded_module.get("stripped", False)) or not self.population
         self.header = loaded_module["header"]
         self.target = loaded_module["target"]
         self.targets = loaded_module["targets"]
@@ -2993,6 +3108,19 @@ class Snake():
 
 # Per-worker shared data (set once via Pool initializer, reused across jobs)
 _worker_data = {}
+
+# v5.4.8 — model shared with inference workers via fork-inherited COW.
+# _parallel_infer sets this global before forking the pool; each forked child
+# reads it directly from its inherited address space (no pickling of the model).
+_infer_model = None
+
+
+def _infer_chunk_worker(job):
+    """Score a contiguous chunk of datapoints with a single-dict Snake method.
+    Returns (start_index, [results...]) so the parent can splice in order."""
+    method_name, start, chunk = job
+    method = getattr(_infer_model, method_name)
+    return start, [method(X) for X in chunk]
 
 
 def _init_worker(population, targets, header, datatypes, oppose_profile=None, col_stats=None, feature_mi=None, lookahead=5):

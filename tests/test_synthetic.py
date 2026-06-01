@@ -1,4 +1,4 @@
-"""Tests for get_synthetic — the v5.4.7 synthetic audit.
+"""Tests for get_synthetic — the v5.4.8 synthetic audit.
 
 The deterministic local path (interpret=False) is fully tested offline: it must
 never need the network and must stay honest (noise -> is_noise, signal -> strong,
