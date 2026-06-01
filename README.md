@@ -33,22 +33,31 @@
 
 SAT-based explainable multiclass classifier. Zero dependencies. Pure Python.
 
-> ## 🐍 New in v5.4.8 — parallel batch inference + stripped models for serving
+> ## 🐍 pandas in, pandas out — the whole loop in four lines (v5.4.8)
 >
-> Every prediction method now takes a **list** as easily as a single dict — and uses every core when you do.
+> Read a CSV, fit, predict the whole test set, ship it. No `.values`, no `.to_dict()`, no batching loop.
 >
 > ```python
-> # Same method. Pass one dict → one result. Pass a list → a list, in order.
-> model.get_prediction(X)        # "versicolor"
-> model.get_prediction(batch)    # ["versicolor", "setosa", ...]  — fanned across CPUs
+> import pandas as pd
+> from algorithmeai import Snake
+>
+> df_train = pd.read_csv("train.csv")
+> df_test  = pd.read_csv("test.csv")
+>
+> snake = Snake(df_train, target_index="target")     # fit straight from a DataFrame
+> df_test["target"] = snake.get_prediction(df_test)  # predict every row, in order, across all cores
+> df_test.to_csv("submission.csv", index=False)      # done
 > ```
 >
-> - **Pass a list, use every core** — Snake divides a batch across `min(cpu_count, len(batch))` processes. **5.4× on a 10-core box** for a 20k-row batch, scaling with core count. No threads (GIL-bound), no new API.
-> - **pandas, seamlessly** — train from a DataFrame, predict on a DataFrame or a single `pd.Series`, then `df['pred'] = model.get_prediction(X)`. Snake never imports pandas — it duck-types, so zero dependencies still holds.
-> - **Exact, not approximate** — the batch result is element-for-element identical to looping the single-dict call. Layer independence + non-dedup vote merge make splitting safe.
-> - **Stripped models for serving** — `to_json(stripped=True)` drops the training population (the bulk of the file) and keeps only what inference needs. Lean artifact → many workers fit in RAM → you stay CPU-bound. Audit/augmented raise a clear error on a stripped model instead of guessing.
+> - **Train on a DataFrame, predict on a DataFrame** — and a single `pd.Series` row works too. Snake **never imports pandas**: it duck-types, so zero dependencies still holds.
+> - **Not a black box** — every prediction carries its reasoning *as columns*: `df["audit"] = snake.get_audit(df_test)` and `pd.DataFrame(snake.get_augmented(df_test))` returns an enriched frame with your original metadata **plus** Prediction, Probability, Audit, and the matched Lookalikes per row.
+> - **Uses every core** — a DataFrame fans out across `min(cpu_count, len(df))` processes (**5.4× on a 10-core box**, 20k rows), and the result is element-for-element identical to the per-row loop.
 >
-> → [Batch inference](#batch-inference--pass-a-list-use-every-core-v548) · [pandas](#pandas-seamlessly-v548) · [Stripped models](#stripped-models-for-serving-v548)
+> → [DataFrames & pandas](#dataframes--pandas-v548) · [Batch inference](#batch-inference--pass-a-list-use-every-core-v548) · [Stripped models for serving](#stripped-models-for-serving-v548)
+
+> ### Also in v5.4.8 — parallel batch + stripped serving
+>
+> Every prediction method is **polymorphic**: pass a `list[dict]` (or DataFrame) and Snake divides it across your CPU cores, exact to the sequential call. `to_json(stripped=True)` drops the training population so many workers fit in RAM and stay CPU-bound — the basis for a multi-core serving pool. → [Batch inference](#batch-inference--pass-a-list-use-every-core-v548)
 
 > ### Previously — v5.4.7: `get_synthetic`, audit a whole dataset
 >
