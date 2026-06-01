@@ -5,8 +5,8 @@
 
 [![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-Proprietary-red.svg?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAxTDMgNXY2YzcgNCA4LjUgOC40IDkgMTIuOEM5LjUgMjAuNCA4IDE2IDggMTFWNmw0LTIuNUwxNiA2djVjMCA1LTEuNSA5LjQtNCAxa)](LICENSE)
-[![Version](https://img.shields.io/badge/v5.4.6-Distribution_Candles_+_Regression-blueviolet.svg?logo=semanticrelease)](https://github.com/Monce-AI/algorithmeai-snake/releases/tag/v5.4.6)
-[![Build](https://img.shields.io/badge/Build-266_tests_passing-brightgreen.svg?logo=githubactions&logoColor=white)](#testing)
+[![Version](https://img.shields.io/badge/v5.4.8-Parallel_Batch_+_Stripped_Serving-blueviolet.svg?logo=semanticrelease)](https://github.com/Monce-AI/algorithmeai-snake/releases/tag/v5.4.8)
+[![Build](https://img.shields.io/badge/Build-287_tests_passing-brightgreen.svg?logo=githubactions&logoColor=white)](#testing)
 [![Profiles](https://img.shields.io/badge/Profiles-8_oppose_strategies-orange.svg?logo=probot&logoColor=white)](#oppose-profiles-v520)
 
 [![Production](https://img.shields.io/badge/Production-Live_on_AWS-FF9900.svg?logo=amazonaws&logoColor=white)](https://snake.aws.monce.ai)
@@ -33,22 +33,25 @@
 
 SAT-based explainable multiclass classifier. Zero dependencies. Pure Python.
 
-> ## 🐍 New in v5.4.7 — `get_synthetic`: audit a whole dataset, not just one prediction
+> ## 🐍 New in v5.4.8 — parallel batch inference + stripped models for serving
 >
-> Snake already explains *every* prediction. **v5.4.7 explains the whole dataset** — and tells you, honestly, when there's nothing to explain.
+> Every prediction method now takes a **list** as easily as a single dict — and uses every core when you do.
 >
 > ```python
-> out = model.get_synthetic(test)          # scan a batch — 0 tokens, sub-ms/point
-> out["resultat"]
-> # "The bet held: 82.1% correct (AUROC 0.856), strongest clue = subtype —
-> #  though it's a touch over-optimistic, so trust accuracy over confidence."
+> # Same method. Pass one dict → one result. Pass a list → a list, in order.
+> model.get_prediction(X)        # "versicolor"
+> model.get_prediction(batch)    # ["versicolor", "setosa", ...]  — fanned across CPUs
 > ```
 >
-> - **Honest by construction** — a permutation-free significance test (χ² on debiased mutual information) flags `is_noise=true` on random data and `strong` on real signal. *Same pipeline, opposite verdicts.* Snake never manufactures signal from noise.
-> - **Calibration in the open** — reports the predicted rate vs the **true base rate**, so over-optimism is surfaced, not hidden.
-> - **Local-first, zero-dependency** — the full deterministic summary runs offline (`interpret=False`). The plain-language *hypothesis / experiment / result* narration is one optional cloud call via the [monceai SDK](https://github.com/Monce-AI/monceai-sdk), imported lazily.
+> - **Pass a list, use every core** — Snake divides a batch across `min(cpu_count, len(batch))` processes. **5.4× on a 10-core box** for a 20k-row batch, scaling with core count. No threads (GIL-bound), no new API.
+> - **Exact, not approximate** — the batch result is element-for-element identical to looping the single-dict call. Layer independence + non-dedup vote merge make splitting safe.
+> - **Stripped models for serving** — `to_json(stripped=True)` drops the training population (the bulk of the file) and keeps only what inference needs. Lean artifact → many workers fit in RAM → you stay CPU-bound. Audit/augmented raise a clear error on a stripped model instead of guessing.
 >
-> → [Full section below](#synthetic-audit-at-scale-v547)
+> → [Batch inference](#batch-inference--pass-a-list-use-every-core-v548) · [Stripped models](#stripped-models-for-serving-v548)
+
+> ### Previously — v5.4.7: `get_synthetic`, audit a whole dataset
+>
+> Snake already explains *every* prediction; v5.4.7 explains the **whole dataset** — and tells you, honestly, when there's nothing to explain. A permutation-free χ² significance test on debiased mutual information flags `is_noise=true` on random data and `strong` on real signal, reports calibration vs the true base rate, and runs zero-dependency offline (the plain-language narration is one optional cloud call). → [Full section](#synthetic-audit-at-scale-v547)
 
 ## What Is Snake
 
@@ -61,6 +64,8 @@ Input X  →  Match SAT clauses  →  Find lookalikes  →  Vote  →  Predictio
 > **Predicted outcome:** `setosa` (93.3%)
 > Because: `"petal_length" <= 2.45` AND `"petal_width" <= 0.8`
 > Matched 15 lookalikes, all class `setosa`.
+
+**v5.4.8** makes every prediction method **polymorphic** — pass a list of dicts and Snake divides the batch across your CPU cores (processes, not threads), returning results in input order, **exactly** matching the sequential call (**5.4× on 10 cores**, 20k rows). Adds **stripped serialization** (`to_json(stripped=True)`) — drop the training population to serve the hot path from a lean, RAM-light artifact, the basis for a multi-core worker pool.
 
 **v5.4.7** adds **`get_synthetic`** — a synthetic audit at *dataset* scale. Snake scans a batch of points locally (0 tokens, sub-ms each) and reports deterministic diagnostics: prediction spread, calibration vs the true base rate, debiased feature mutual-information, and a **label-free noise detector** that tells you honestly when your data looks like random luck. An optional one-call cloud narration (via the [monceai SDK](https://github.com/Monce-AI/monceai-sdk)) explains the finding as a tiny science experiment — *hypothesis / experiment / result*. The local path stays zero-dependency; the cloud voice is imported lazily.
 
@@ -361,6 +366,10 @@ Snake(Knowledge, target_index=0, excluded_features_index=(), n_layers=5, bucket=
 | `get_batch_regression(Xs)` | `list[float]` | Batched regression |
 | `get_synthetic(Xs, interpret=True)` | dict | Dataset-scale synthetic audit (v5.4.7) — deterministic summary + optional cloud narration |
 
+Every `X` above can also be a **list of dicts** — Snake then parallelizes across
+your CPU cores and returns a list of results in input order. See
+[Batch inference](#batch-inference--pass-a-list-use-every-core-v548).
+
 ```python
 X = {"petal_length": 4.3, "petal_width": 1.4}
 
@@ -369,6 +378,46 @@ model.get_probability(X)   # {"setosa": 0.0, "versicolor": 0.87, "virginica": 0.
 model.get_lookalikes(X)    # [[42, "versicolor", [0, 5]], [87, "versicolor", [3]]]
 model.get_augmented(X)     # {**X, "Lookalikes": ..., "Probability": ..., "Prediction": ..., "Audit": ...}
 ```
+
+### Batch inference — pass a list, use every core (v5.4.8)
+
+Every prediction method is **polymorphic**: give it a single dict and you get a
+single result; give it a **list of dicts** and Snake fans the work across a
+proportionate number of CPU processes and returns a list in the same order.
+Same method, same name — you don't learn a new API to go fast.
+
+```python
+# Single datapoint — one result (unchanged)
+model.get_prediction({"petal_length": 4.3, "petal_width": 1.4})   # "versicolor"
+
+# A list — Snake divides it across your cores, returns a list in input order
+batch = [{"petal_length": 4.3, "petal_width": 1.4}, ...]   # 20,000 rows
+model.get_prediction(batch)     # ["versicolor", "setosa", ...]  (len == 20,000)
+model.get_probability(batch)    # [ {...}, {...}, ... ]
+model.get_lookalikes(batch)     # [ [...], [...], ... ]
+model.get_regression(batch)     # [ 3.14, 2.71, ... ]
+```
+
+**The result is exact, not approximate.** Each datapoint is scored independently
+by the very same single-dict code path, so the batch result is element-for-element
+identical to a plain `[model.get_prediction(x) for x in batch]` — just faster.
+Snake's layers are independent and votes are merged without dedup, so splitting a
+batch across processes can't change an answer.
+
+**It uses processes, not threads** (pure-Python inference is GIL-bound, so threads
+wouldn't help). Snake sizes the pool to `min(cpu_count, len(batch))` — one balanced
+chunk per worker — so it scales with the hardware you actually have. Measured **5.4×
+on a 10-core machine** for a 20k-row batch; the speedup tracks core count.
+
+Best practices:
+
+- **Hand Snake the whole list at once.** Don't loop in Python calling the
+  single-dict method — that's the slow path you're trying to avoid. One call with
+  the full list lets Snake schedule the cores.
+- **Batch has a small fixed cost** (forking workers). Below `model._parallel_threshold`
+  (default 64) Snake runs inline automatically — tiny batches don't pay for a pool.
+- **Cap the pool** with `model._max_workers = N` if you're sharing the box with
+  other work (e.g. a web server's own workers). Defaults to all cores.
 
 **Audit output** (Routing AND + Lookalike AND):
 ```
@@ -553,7 +602,7 @@ Snake **beats RF and GB on Breast Cancer AUROC** (0.999 vs 0.997 vs 0.995). Ties
 ## Save & Load
 
 ```python
-# Save
+# Save (full model — keeps everything, the default)
 model.to_json("model.json")
 
 # Load (auto-detected by .json extension)
@@ -561,6 +610,43 @@ model = Snake("model.json")
 ```
 
 Backwards compatible — v0.1 flat JSON files (with `clauses` + `lookalikes` at top level) are automatically wrapped into the bucketed format on load.
+
+### Stripped models for serving (v5.4.8)
+
+A saved model includes the full training **population** — typically the large
+majority of the file. Inference doesn't need it: prediction, probability,
+lookalikes, candle, and regression run entirely off the SAT layers. Save a
+**stripped** model to drop the population and keep only what serving needs:
+
+```python
+# One-time: produce a lean artifact for production
+model.to_json("model.stripped.json", stripped=True)
+
+# In the server: load the stripped model — far less RAM per instance
+served = Snake("model.stripped.json")
+served.get_prediction(X)        # works
+served.get_probability(batch)   # works — and parallelizes
+```
+
+**Why it matters for a worker pool.** To use every core you run several Snake
+workers, each holding the model. A stripped model is small, so you can fit many
+copies in RAM and stay **CPU-bound** (every core busy doing useful clause work)
+instead of RAM-bound. This is the same split the production Snake API uses to
+serve at scale.
+
+**The trade-off is explicit and safe.** `get_audit` and `get_augmented` render
+real training examples ("e.g. *44.2 LowE*"), so they need the population. Call
+them on a stripped model and you get a clear error telling you to load the full
+model — never a silent wrong answer:
+
+```python
+served.get_audit(X)
+# RuntimeError: get_audit() needs the training population, but this model was
+# loaded stripped (no population). ... Re-save with to_json(stripped=False) ...
+```
+
+Rule of thumb: **keep one full model** (for audits / RAG / debugging) and
+**serve from the stripped one** (for the high-throughput hot path).
 
 ## Validation & Pruning
 
