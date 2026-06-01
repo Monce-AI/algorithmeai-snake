@@ -175,3 +175,85 @@ def test_full_model_still_audits(tmp_path):
     X = {"fa": 0.3, "fb": 0.9, "name": "riou"}
     assert isinstance(mf.get_audit(X), str)
     assert "Prediction" in mf.get_augmented(X)
+
+
+# ---------------------------------------------------------------------------
+# pandas seamless I/O (skipped if pandas not installed — library stays zero-dep)
+# ---------------------------------------------------------------------------
+
+pd = pytest.importorskip("pandas")
+
+
+def _df_model(n=400, n_layers=5, bucket=120):
+    random.seed(13)
+    rows = []
+    for _ in range(n):
+        a, b = random.random(), random.random()
+        rows.append({"label": "A" if a + b > 1.0 else "B",
+                     "fa": round(a, 3), "fb": round(b, 3)})
+    return pd.DataFrame(rows)
+
+
+def test_train_from_dataframe():
+    df = _df_model()
+    m = Snake(df, target_index="label", n_layers=5, bucket=120)
+    assert m.target == "label"
+    assert len(m.population) > 0
+
+
+@pytest.mark.parametrize("method", [
+    "get_prediction", "get_probability", "get_lookalikes",
+])
+def test_dataframe_batch_matches_records(method):
+    """A DataFrame in must match the same rows as list[dict] AND the per-row loop."""
+    df = _df_model()
+    m = Snake(df, target_index="label", n_layers=5, bucket=120)
+    test = df.drop(columns=["label"]).head(20)
+    records = test.to_dict("records")
+    from_df = getattr(m, method)(test)
+    from_records = getattr(m, method)(records)
+    from_loop = [getattr(m, method)(r) for r in records]
+    assert isinstance(from_df, list)
+    assert len(from_df) == len(test)
+    assert from_df == from_records == from_loop
+
+
+def test_series_single_row():
+    """A single pd.Series row behaves exactly like the equivalent dict."""
+    df = _df_model()
+    m = Snake(df, target_index="label", n_layers=5, bucket=120)
+    row = df.drop(columns=["label"]).iloc[0]
+    assert m.get_prediction(row) == m.get_prediction(row.to_dict())
+    assert m.get_probability(row) == m.get_probability(row.to_dict())
+
+
+def test_dataframe_column_assignment():
+    """The headline ergonomic: df['pred'] = model.get_prediction(df)."""
+    df = _df_model()
+    m = Snake(df, target_index="label", n_layers=5, bucket=120)
+    test = df.drop(columns=["label"]).head(10).copy()
+    test["prediction"] = m.get_prediction(test)
+    test["confidence"] = [max(p.values()) for p in m.get_probability(test)]
+    assert "prediction" in test.columns
+    assert test["prediction"].isin(["A", "B"]).all()
+    assert (test["confidence"] >= 0).all() and (test["confidence"] <= 1).all()
+
+
+def test_empty_dataframe_raises():
+    df = _df_model()
+    m = Snake(df, target_index="label", n_layers=5, bucket=120)
+    with pytest.raises(ValueError, match="Empty DataFrame"):
+        m.get_prediction(df.drop(columns=["label"]).head(0))
+
+
+def test_series_audit_and_augmented():
+    """A pd.Series row must flow all the way through audit/augmented — these
+    pass X to the population-rendering path, which (pre-fix) hit the Cython
+    apply_literal expecting a dict and raised TypeError on a Series."""
+    df = _df_model()
+    m = Snake(df, target_index="label", n_layers=5, bucket=120)
+    row = df.drop(columns=["label"]).iloc[0]
+    audit = m.get_audit(row)
+    assert "BEGIN AUDIT" in audit
+    aug = m.get_augmented(row)
+    assert "Prediction" in aug and "Audit" in aug

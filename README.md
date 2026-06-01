@@ -6,7 +6,7 @@
 [![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-Proprietary-red.svg?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAxTDMgNXY2YzcgNCA4LjUgOC40IDkgMTIuOEM5LjUgMjAuNCA4IDE2IDggMTFWNmw0LTIuNUwxNiA2djVjMCA1LTEuNSA5LjQtNCAxa)](LICENSE)
 [![Version](https://img.shields.io/badge/v5.4.8-Parallel_Batch_+_Stripped_Serving-blueviolet.svg?logo=semanticrelease)](https://github.com/Monce-AI/algorithmeai-snake/releases/tag/v5.4.8)
-[![Build](https://img.shields.io/badge/Build-287_tests_passing-brightgreen.svg?logo=githubactions&logoColor=white)](#testing)
+[![Build](https://img.shields.io/badge/Build-295_tests_passing-brightgreen.svg?logo=githubactions&logoColor=white)](#testing)
 [![Profiles](https://img.shields.io/badge/Profiles-8_oppose_strategies-orange.svg?logo=probot&logoColor=white)](#oppose-profiles-v520)
 
 [![Production](https://img.shields.io/badge/Production-Live_on_AWS-FF9900.svg?logo=amazonaws&logoColor=white)](https://snake.aws.monce.ai)
@@ -44,10 +44,11 @@ SAT-based explainable multiclass classifier. Zero dependencies. Pure Python.
 > ```
 >
 > - **Pass a list, use every core** — Snake divides a batch across `min(cpu_count, len(batch))` processes. **5.4× on a 10-core box** for a 20k-row batch, scaling with core count. No threads (GIL-bound), no new API.
+> - **pandas, seamlessly** — train from a DataFrame, predict on a DataFrame or a single `pd.Series`, then `df['pred'] = model.get_prediction(X)`. Snake never imports pandas — it duck-types, so zero dependencies still holds.
 > - **Exact, not approximate** — the batch result is element-for-element identical to looping the single-dict call. Layer independence + non-dedup vote merge make splitting safe.
 > - **Stripped models for serving** — `to_json(stripped=True)` drops the training population (the bulk of the file) and keeps only what inference needs. Lean artifact → many workers fit in RAM → you stay CPU-bound. Audit/augmented raise a clear error on a stripped model instead of guessing.
 >
-> → [Batch inference](#batch-inference--pass-a-list-use-every-core-v548) · [Stripped models](#stripped-models-for-serving-v548)
+> → [Batch inference](#batch-inference--pass-a-list-use-every-core-v548) · [pandas](#pandas-seamlessly-v548) · [Stripped models](#stripped-models-for-serving-v548)
 
 > ### Previously — v5.4.7: `get_synthetic`, audit a whole dataset
 >
@@ -65,7 +66,7 @@ Input X  →  Match SAT clauses  →  Find lookalikes  →  Vote  →  Predictio
 > Because: `"petal_length" <= 2.45` AND `"petal_width" <= 0.8`
 > Matched 15 lookalikes, all class `setosa`.
 
-**v5.4.8** makes every prediction method **polymorphic** — pass a list of dicts and Snake divides the batch across your CPU cores (processes, not threads), returning results in input order, **exactly** matching the sequential call (**5.4× on 10 cores**, 20k rows). Adds **stripped serialization** (`to_json(stripped=True)`) — drop the training population to serve the hot path from a lean, RAM-light artifact, the basis for a multi-core worker pool.
+**v5.4.8** makes every prediction method **polymorphic** — pass a list of dicts (or a **pandas DataFrame**, or a single `pd.Series`) and Snake divides the batch across your CPU cores (processes, not threads), returning results in input order, **exactly** matching the sequential call (**5.4× on 10 cores**, 20k rows). Train from a DataFrame, predict on a DataFrame, `df['pred'] = model.get_prediction(X)` — all duck-typed, so the library still imports nothing. Adds **stripped serialization** (`to_json(stripped=True)`) — drop the training population to serve the hot path from a lean, RAM-light artifact, the basis for a multi-core worker pool.
 
 **v5.4.7** adds **`get_synthetic`** — a synthetic audit at *dataset* scale. Snake scans a batch of points locally (0 tokens, sub-ms each) and reports deterministic diagnostics: prediction spread, calibration vs the true base rate, debiased feature mutual-information, and a **label-free noise detector** that tells you honestly when your data looks like random luck. An optional one-call cloud narration (via the [monceai SDK](https://github.com/Monce-AI/monceai-sdk)) explains the finding as a tiny science experiment — *hypothesis / experiment / result*. The local path stays zero-dependency; the cloud voice is imported lazily.
 
@@ -418,6 +419,40 @@ Best practices:
   (default 64) Snake runs inline automatically — tiny batches don't pay for a pool.
 - **Cap the pool** with `model._max_workers = N` if you're sharing the box with
   other work (e.g. a web server's own workers). Defaults to all cores.
+
+#### pandas, seamlessly (v5.4.8)
+
+The same polymorphism extends to pandas — **train from a DataFrame, predict on a
+DataFrame, read off columns.** Snake never imports pandas (it duck-types, so the
+zero-dependency guarantee holds); pandas objects flow through only because you
+brought them.
+
+```python
+import pandas as pd
+from algorithmeai import Snake
+
+df = pd.read_csv("orders.csv")
+
+# Train directly from the DataFrame — target_index is just a column name.
+model = Snake(df, target_index="family", n_layers=12, oppose_profile="industrial")
+
+# Predict on a DataFrame — every method takes it and parallelizes across cores.
+X = df.drop(columns=["family"])
+df["prediction"] = model.get_prediction(X)                       # -> list, input order
+df["confidence"] = [max(p.values()) for p in model.get_probability(X)]
+df["forecast"]   = model.get_regression(X)                       # continuous targets
+
+# A single pd.Series row works too — full audit, no conversion.
+model.get_audit(df.iloc[0])
+
+# Then it's just pandas:
+df.groupby("factory")["confidence"].mean()
+```
+
+A DataFrame in returns a plain list out (same as `list[dict]` — assign by
+position), and a single `pd.Series` row behaves exactly like the equivalent dict.
+Results are identical across all three call styles — DataFrame, `list[dict]`, and
+the per-row loop.
 
 **Audit output** (Routing AND + Lookalike AND):
 ```

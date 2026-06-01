@@ -2168,6 +2168,37 @@ class Snake():
         cap = self._max_workers or os.cpu_count() or 1
         return max(1, min(cap, n_items))
 
+    def _as_batch(self, X):
+        """If X is a batch of datapoints, return it as a list of row-dicts;
+        otherwise return None (X is a single datapoint).
+
+        Accepts a list of dicts or a pandas DataFrame. Duck-typed — a DataFrame
+        is anything with a callable to_dict() and a `columns` attribute (which
+        excludes a pd.Series, that has to_dict() but is a single row). Snake
+        never imports pandas, so the zero-dependency guarantee holds: pandas
+        objects flow through only because the caller brought them.
+        """
+        if isinstance(X, list):
+            return X
+        to_dict = getattr(X, "to_dict", None)
+        if callable(to_dict) and hasattr(X, "columns"):
+            records = X.to_dict("records")
+            if not records:
+                raise ValueError("Empty DataFrame")
+            return records
+        return None
+
+    def _as_single(self, X):
+        """Coerce a single datapoint to a plain dict. A pd.Series (one row) has
+        a callable to_dict() but no `columns`; convert it so plain dict semantics
+        hold in every downstream method. A real dict passes through untouched."""
+        if isinstance(X, dict):
+            return X
+        to_dict = getattr(X, "to_dict", None)
+        if callable(to_dict) and not hasattr(X, "columns"):
+            return X.to_dict()
+        return X
+
     def _parallel_infer(self, method_name, Xs):
         """Run a single-dict inference method over a list of datapoints, dividing
         the work across a proportionate number of CPU processes.
@@ -2222,9 +2253,10 @@ class Snake():
         return results
 
     def get_lookalikes(self, X):
-        if isinstance(X, list):
-            return self._parallel_infer("get_lookalikes", X)
-        X = self._normalize_features(X)
+        batch = self._as_batch(X)
+        if batch is not None:
+            return self._parallel_infer("get_lookalikes", batch)
+        X = self._normalize_features(self._as_single(X))
         if _HAS_ACCEL:
             return get_lookalikes_fast(self.layers, X, self.header, self.targets)
         all_lookalikes = []
@@ -2244,9 +2276,10 @@ class Snake():
     def get_lookalikes_labeled(self, X):
         """Like get_lookalikes but each entry includes origin: 'c' (core) or 'n' (noise).
         Returns list of [global_idx, target_value, condition, origin]."""
-        if isinstance(X, list):
-            return self._parallel_infer("get_lookalikes_labeled", X)
-        X = self._normalize_features(X)
+        batch = self._as_batch(X)
+        if batch is not None:
+            return self._parallel_infer("get_lookalikes_labeled", batch)
+        X = self._normalize_features(self._as_single(X))
         all_lookalikes = []
         for layer in self.layers:
             bucket = traverse_chain(layer, X, self.apply_literal)
@@ -2290,8 +2323,9 @@ class Snake():
     Gives the probability vector associated
     """
     def get_probability(self, X):
-        if isinstance(X, list):
-            return self._parallel_infer("get_probability", X)
+        batch = self._as_batch(X)
+        if batch is not None:
+            return self._parallel_infer("get_probability", batch)
         lookalikes = self.get_lookalikes(X)
         return self._prob_to_dict(self._get_probability_from_lookalikes(lookalikes))
 
@@ -2299,8 +2333,9 @@ class Snake():
     Predicts the outcome for a datapoint
     """
     def get_prediction(self, X):
-        if isinstance(X, list):
-            return self._parallel_infer("get_prediction", X)
+        batch = self._as_batch(X)
+        if batch is not None:
+            return self._parallel_infer("get_prediction", batch)
         lookalikes = self.get_lookalikes(X)
         prob_tuples = self._get_probability_from_lookalikes(lookalikes)
         return self._prediction_from_prob(prob_tuples)
@@ -2309,9 +2344,11 @@ class Snake():
     Augments a datapoint with every available information
     """
     def get_augmented(self, X):
-        if isinstance(X, list):
-            return self._parallel_infer("get_augmented", X)
+        batch = self._as_batch(X)
+        if batch is not None:
+            return self._parallel_infer("get_augmented", batch)
         self._require_population("get_augmented")
+        X = self._as_single(X)
         Y = X.copy()
         lookalikes = self.get_lookalikes(X)
         prob_tuples = self._get_probability_from_lookalikes(lookalikes)
@@ -2330,8 +2367,9 @@ class Snake():
     that are numerically coercible, returns NaNs + n=0 otherwise.
     """
     def get_candle(self, X):
-        if isinstance(X, list):
-            return self._parallel_infer("get_candle", X)
+        batch = self._as_batch(X)
+        if batch is not None:
+            return self._parallel_infer("get_candle", batch)
         lookalikes = self.get_lookalikes(X)
         return compute_candle([la[1] for la in lookalikes])
 
@@ -2355,8 +2393,9 @@ class Snake():
     while get_regression averages the consensus middle of the distribution.
     """
     def get_regression(self, X):
-        if isinstance(X, list):
-            return self._parallel_infer("get_regression", X)
+        batch = self._as_batch(X)
+        if batch is not None:
+            return self._parallel_infer("get_regression", batch)
         return self.get_candle(X).iqr_mean
 
     """
@@ -2561,9 +2600,11 @@ class Snake():
     R.A.G.
     """
     def get_audit(self, X):
-        if isinstance(X, list):
-            return self._parallel_infer("get_audit", X)
+        batch = self._as_batch(X)
+        if batch is not None:
+            return self._parallel_infer("get_audit", batch)
         self._require_population("get_audit")
+        X = self._as_single(X)
         lookalikes = self.get_lookalikes(X)
         prob_tuples = self._get_probability_from_lookalikes(lookalikes)
         probability = self._prob_to_dict(prob_tuples)
