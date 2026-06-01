@@ -309,6 +309,8 @@ model = Snake("titanic.csv", target_index=0)
 ```python
 model = Snake(df, target_index="survived")
 ```
+DataFrames work for **inference** too — `model.get_prediction(df)` predicts every
+row in parallel and returns a list in row order. See [DataFrames & pandas](#dataframes--pandas-v548).
 
 **List of tuples:**
 ```python
@@ -420,39 +422,9 @@ Best practices:
 - **Cap the pool** with `model._max_workers = N` if you're sharing the box with
   other work (e.g. a web server's own workers). Defaults to all cores.
 
-#### pandas, seamlessly (v5.4.8)
-
-The same polymorphism extends to pandas — **train from a DataFrame, predict on a
-DataFrame, read off columns.** Snake never imports pandas (it duck-types, so the
-zero-dependency guarantee holds); pandas objects flow through only because you
-brought them.
-
-```python
-import pandas as pd
-from algorithmeai import Snake
-
-df = pd.read_csv("orders.csv")
-
-# Train directly from the DataFrame — target_index is just a column name.
-model = Snake(df, target_index="family", n_layers=12, oppose_profile="industrial")
-
-# Predict on a DataFrame — every method takes it and parallelizes across cores.
-X = df.drop(columns=["family"])
-df["prediction"] = model.get_prediction(X)                       # -> list, input order
-df["confidence"] = [max(p.values()) for p in model.get_probability(X)]
-df["forecast"]   = model.get_regression(X)                       # continuous targets
-
-# A single pd.Series row works too — full audit, no conversion.
-model.get_audit(df.iloc[0])
-
-# Then it's just pandas:
-df.groupby("factory")["confidence"].mean()
-```
-
-A DataFrame in returns a plain list out (same as `list[dict]` — assign by
-position), and a single `pd.Series` row behaves exactly like the equivalent dict.
-Results are identical across all three call styles — DataFrame, `list[dict]`, and
-the per-row loop.
+The same polymorphism extends to **pandas** — pass a DataFrame or a `pd.Series`
+and Snake handles it natively. See [DataFrames & pandas](#dataframes--pandas-v548)
+for the full workflow.
 
 **Audit output** (Routing AND + Lookalike AND):
 ```
@@ -487,6 +459,137 @@ the per-row loop.
   >> PREDICTION: versicolor
 ### END AUDIT ###
 ```
+
+## DataFrames & pandas (v5.4.8)
+
+Snake speaks **pandas** end to end — train from a `DataFrame`, predict on a
+`DataFrame`, score a single `Series` — without you ever converting a thing.
+
+**The whole loop, four lines:**
+
+```python
+import pandas as pd
+from algorithmeai import Snake
+
+df_train = pd.read_csv("train.csv")
+df_test  = pd.read_csv("test.csv")
+
+snake = Snake(df_train, target_index="target")     # fit
+df_test["target"] = snake.get_prediction(df_test)  # predict the whole test set, in row order
+df_test.to_csv("submission.csv", index=False)      # ship it
+```
+
+That's the entire train → predict → submit cycle. No `.values`, no `.to_dict()`,
+no batching loop, no glue — read a CSV, fit, assign the column back. The
+`get_prediction(df_test)` call fans every row across your CPU cores under the hood
+and hands back a list in row order, so the assignment just lines up.
+
+> **Zero-dependency, by design.** Snake **never imports pandas**. It *duck-types*:
+> a DataFrame is "anything with a callable `.to_dict()` and a `.columns` attribute",
+> a Series is "`.to_dict()` but no `.columns`". So pandas flows through only because
+> *you* brought it — install Snake without pandas and nothing changes.
+
+### Train from a DataFrame
+
+The constructor already accepts a DataFrame; `target_index` is just the label
+column's name (or position). Everything else — type detection, dedup, profiles —
+works exactly as with `list[dict]`.
+
+```python
+import pandas as pd
+from algorithmeai import Snake
+
+df = pd.read_csv("orders.csv")     # columns: family, denomination, factory, thickness, qty
+model = Snake(df, target_index="family", n_layers=12, oppose_profile="industrial")
+```
+
+### Predict on a DataFrame — and read off columns
+
+Every prediction method takes the feature DataFrame and returns a **plain list in
+row order**, so assignment back onto the frame is positional and clean. Under the
+hood it's the v5.4.8 parallel batch path — the rows fan out across your CPU cores.
+
+```python
+X = df.drop(columns=["family"])
+
+df["prediction"]  = model.get_prediction(X)                       # ["LAMINATED", "MONOLITHIC", ...]
+df["confidence"]  = [max(p.values()) for p in model.get_probability(X)]
+df["forecast"]    = model.get_regression(X)                       # continuous targets (candles)
+
+# Then it's just pandas — group, filter, route on Snake's own output:
+df.groupby("factory")["confidence"].mean()
+low_conf = df[df["confidence"] < 0.80]                            # send these to a fallback
+```
+
+### An *explainable* prediction column — audit + lookalikes per row
+
+This is what makes Snake different from a black-box classifier on a DataFrame:
+every prediction comes with its **reasoning** and its **evidence**, and both are
+just columns. `get_audit(df)` returns one human-readable trace per row; the
+labeled lookalikes are the actual training rows that voted for each answer.
+
+```python
+df["prediction"] = model.get_prediction(X)
+df["audit"]      = model.get_audit(X)                             # one reasoning trace per row (str)
+df["lookalikes"] = model.get_lookalikes_labeled(X)               # [[idx, class, condition, "c"|"n"], ...] per row
+
+# Why was this row called LAMINATED? Read it.
+print(df.loc[0, "audit"])
+
+# How many training rows backed it, and were they core or noise?
+las  = df.loc[0, "lookalikes"]
+core = [la for la in las if la[3] == "c"]
+print(f"{len(las)} lookalikes, {len(core)} core")
+```
+
+### One call, the whole bundle — `get_augmented` → enriched DataFrame
+
+`get_augmented(df)` returns a list of dicts that each carry the **original row
+(your metadata)** plus `Prediction`, `Probability`, `Audit`, and `Lookalikes`.
+Wrap it in `pd.DataFrame(...)` and you get a fully enriched frame in one line —
+your `id` and feature columns ride along untouched, next to everything the model
+knows about each row.
+
+```python
+enriched = pd.DataFrame(model.get_augmented(X))
+# columns: <your original columns...> + Prediction + Probability + Audit + Lookalikes
+
+enriched[["id", "Prediction"]]                                   # metadata + answer
+enriched["n_lookalikes"] = enriched["Lookalikes"].str.len()      # evidence count, per row
+enriched.query("Prediction == 'LAMINATED'")["Audit"].iloc[0]     # full reasoning for a class
+```
+
+Predict, explain, and keep your keys — all in a single pass over the data. Filter
+on confidence, drill into any row's audit, count its supporting lookalikes, route
+the uncertain ones to a fallback. The submission isn't just labels; it's a
+queryable record of *why*.
+
+### Score a single row (`pd.Series`)
+
+A single row off a DataFrame is a `pd.Series` — pass it directly. It behaves
+exactly like the equivalent dict, all the way through the full audit trail.
+
+```python
+row = X.iloc[0]                         # a pd.Series
+model.get_prediction(row)               # "LAMINATED"
+model.get_probability(row)              # {"LAMINATED": 1.0, "MONOLITHIC": 0.0}
+print(model.get_audit(row))             # human-readable reasoning, no conversion
+model.get_lookalikes_labeled(row)       # the training rows that voted, with core/noise origin
+```
+
+### What returns what
+
+| You pass | You get back | Notes |
+|----------|--------------|-------|
+| `dict` | single result | unchanged — the classic path |
+| `pd.Series` (one row) | single result | treated as a dict |
+| `list[dict]` | `list` of results, input order | parallel across cores |
+| `pd.DataFrame` | `list` of results, **row order** | parallel across cores; assign with `df["col"] = ...` |
+
+**One guarantee worth stating plainly:** the result is *identical* across all three
+batch call styles. `model.get_prediction(df)`, `model.get_prediction(df.to_dict("records"))`,
+and `[model.get_prediction(r) for r in rows]` return the same list — DataFrame
+support is pure ergonomics, never a different code path. (Covered by the test suite.)
 
 ## Synthetic Audit at Scale (v5.4.7)
 
